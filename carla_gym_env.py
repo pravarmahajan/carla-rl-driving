@@ -52,6 +52,10 @@ class CarlaGymEnv(gym.Env):
         self.episode_steps = 0
         self.max_episode_steps = 1500  # ~75 seconds at 20 Hz
         self.stall_counter = 0
+        self.prev_distance_to_goal = 0.0
+        self.prev_steer = 0.0
+        self.prev_throttle = 0.0
+        self.waypoint_lookahead = 5  # Average heading/curvature over next N waypoints
 
         # 1. Define Action Space: Continuous values for [Steering (-1.0 to 1.0), Throttle (0.0 to 1.0)]
         self.action_space = spaces.Box(
@@ -61,12 +65,13 @@ class CarlaGymEnv(gym.Env):
         )
 
         # 2. Define Observation Space: Real values
-        # [Forward Speed (km/h), Distance to next waypoint (m), Angle diff to waypoint (rad),
-        #  Distance to final goal (m), Lateral offset from lane center (m),
-        #  Heading error vs. road direction (rad)]
+        # [Forward Speed (km/h), Distance to next waypoint (m),
+        #  Angle diff averaged over next N waypoints (rad), Distance to final goal (m),
+        #  Lateral offset from lane center (m), Heading error vs. road direction (rad),
+        #  Previous steer action, Previous throttle action]
         self.observation_space = spaces.Box(
-            low=np.array([0.0, 0.0, -np.pi, 0.0, -5.0, -np.pi]),
-            high=np.array([50.0, 200.0, np.pi, 500.0, 5.0, np.pi]),
+            low=np.array([0.0, 0.0, -np.pi, 0.0, -5.0, -np.pi, -1.0, 0.0]),
+            high=np.array([50.0, 200.0, np.pi, 500.0, 5.0, np.pi, 1.0, 1.0]),
             dtype=np.float32
         )
 
@@ -139,6 +144,8 @@ class CarlaGymEnv(gym.Env):
         # Reset episode step counter
         self.episode_steps = 0
         self.stall_counter = 0
+        self.prev_steer = 0.0
+        self.prev_throttle = 0.0
 
         # Let the car drop and settle safely (tick 10 times instead of sleeping)
         for _ in range(10):
@@ -146,6 +153,7 @@ class CarlaGymEnv(gym.Env):
 
         # Extract initial state observation
         obs = self._get_observation()
+        self.prev_distance_to_goal = float(obs[3])
         info = {}
         return obs, info
 
@@ -179,6 +187,11 @@ class CarlaGymEnv(gym.Env):
             if on_road_wp is not None and np.sign(on_road_wp.lane_id) != self.start_lane_id_sign:
                 self.wrong_way = True
 
+        # Track the action that produced this new state, so it shows up as
+        # "previous action" in the observation computed below.
+        self.prev_steer = steer_action
+        self.prev_throttle = throttle_action
+
         # 2. Extract new observation vectors
         obs = self._get_observation()
 
@@ -193,17 +206,34 @@ class CarlaGymEnv(gym.Env):
         if speed < 1.0 and throttle_action < 0.1:
             reward -= 0.3  # Mild penalty for laziness
 
-        # Advance waypoint if we're close enough (only if actually moving)
+        # Potential-based shaping on distance-to-goal: telescopes to a total
+        # bounded by net distance closed over the episode, independent of
+        # route length -- unlike a flat per-waypoint bonus, this can't dwarf
+        # the terminal crash/off-road penalties on long routes.
+        distance_to_goal = obs[3]
+        reward += 0.5 * (self.prev_distance_to_goal - distance_to_goal)
+        self.prev_distance_to_goal = float(distance_to_goal)
+
+        # Advance waypoint if we're close enough (only if actually moving).
+        # Small fixed bonus kept as a milestone signal, not the main reward driver.
         if len(self.waypoints) > self.waypoint_index:
             distance_to_waypoint = obs[1]
             if distance_to_waypoint < 2.0 and speed > 2.0:  # Within 2m AND moving at least 2 km/h
                 self.waypoint_index += 1
-                reward += 10.0  # Big bonus for reaching waypoint
+                reward += 2.0
 
         # Reward for heading toward waypoint (only if moving)
         if speed > 1.0:  # Only reward steering when actually moving
             angle_error = abs(obs[2])
             reward += max(0, 0.5 - angle_error / np.pi) * 0.5  # Reduced bonus
+
+        # Continuous penalty for drifting off lane center / misaligning with
+        # road heading, instead of relying solely on the sparse lane-invasion
+        # event -- gives a per-tick gradient toward staying centered.
+        lane_offset = obs[4]
+        heading_error = obs[5]
+        reward -= 0.05 * abs(lane_offset)
+        reward -= 0.1 * abs(heading_error)
 
         # Penalize crossing a solid lane marking (wrong-lane / off-road edge)
         if self.lane_invaded_this_step:
@@ -211,6 +241,7 @@ class CarlaGymEnv(gym.Env):
 
         terminated = False
         truncated = False
+        termination_reason = None
 
         # 4. Check terminal criteria
         # Track sustained stalling (full throttle, not moving) rather than a
@@ -225,19 +256,24 @@ class CarlaGymEnv(gym.Env):
         if self.crashed:
             reward -= 100.0
             terminated = True
+            termination_reason = "crash"
         elif self.off_road:
             reward -= 75.0
             terminated = True
+            termination_reason = "off_road"
         elif self.wrong_way:
             reward -= 75.0
             terminated = True
+            termination_reason = "wrong_way"
         elif self.stall_counter >= 20:  # ~1 second of sustained stalling
             reward -= 10.0
             terminated = True
+            termination_reason = "stall"
         elif self.waypoint_index >= len(self.waypoints):
             # Reached the end of the route
             reward += 20.0
             terminated = True
+            termination_reason = "success"
 
         # 5. Episode truncation (time limit) -- penalize running out the clock
         # without reaching the destination, otherwise a policy that loops in
@@ -246,8 +282,9 @@ class CarlaGymEnv(gym.Env):
         if self.episode_steps >= self.max_episode_steps:
             truncated = True
             reward -= 50.0
+            termination_reason = "timeout"
 
-        return obs, reward, terminated, truncated, {}
+        return obs, reward, terminated, truncated, {"termination_reason": termination_reason}
 
     def _generate_route(self, start_location, min_manhattan_distance=100.0, max_manhattan_distance=200.0, fixed_goal=None):
         """Pick a goal within [min, max] Manhattan distance and resolve a real route to it.
@@ -291,26 +328,36 @@ class CarlaGymEnv(gym.Env):
         distance_to_waypoint = 0.0
         angle_to_waypoint = 0.0
         vehicle_loc = self.vehicle.get_location()
+        vehicle_yaw = self.vehicle.get_transform().rotation.yaw
 
-        # Calculate distance and angle to next waypoint
+        # Distance to the immediate next waypoint (used to trigger waypoint
+        # advancement -- that needs the precise next point, not an average).
         if len(self.waypoints) > self.waypoint_index:
-            waypoint = self.waypoints[self.waypoint_index]
-            waypoint_loc = waypoint.transform.location
-
-            # Distance
+            waypoint_loc = self.waypoints[self.waypoint_index].transform.location
             dx = waypoint_loc.x - vehicle_loc.x
             dy = waypoint_loc.y - vehicle_loc.y
             distance_to_waypoint = np.sqrt(dx**2 + dy**2)
 
-            # Angle difference
-            # Get vehicle's heading
-            vehicle_yaw = self.vehicle.get_transform().rotation.yaw
-            # Get direction to waypoint
-            waypoint_yaw = np.arctan2(dy, dx) * 180 / np.pi
-            # Angle difference (normalized to [-pi, pi])
-            angle_diff = waypoint_yaw - vehicle_yaw
-            angle_diff = ((angle_diff + 180) % 360) - 180  # Normalize
-            angle_to_waypoint = angle_diff * np.pi / 180  # Convert to radians
+        # Heading error averaged (circular mean) over the next few waypoints
+        # instead of just the single next one -- a lone waypoint's placement
+        # jitter can look like a steering-relevant angle change on a straight
+        # road when it isn't; averaging over a short lookahead smooths that
+        # noise out while still tracking upcoming curvature.
+        lookahead = self.waypoints[self.waypoint_index:self.waypoint_index + self.waypoint_lookahead]
+        if lookahead:
+            sin_sum = 0.0
+            cos_sum = 0.0
+            for wp in lookahead:
+                wp_loc = wp.transform.location
+                wdx = wp_loc.x - vehicle_loc.x
+                wdy = wp_loc.y - vehicle_loc.y
+                wp_yaw = np.arctan2(wdy, wdx) * 180 / np.pi
+                angle_diff = wp_yaw - vehicle_yaw
+                angle_diff = ((angle_diff + 180) % 360) - 180  # Normalize
+                angle_rad = angle_diff * np.pi / 180
+                sin_sum += math.sin(angle_rad)
+                cos_sum += math.cos(angle_rad)
+            angle_to_waypoint = math.atan2(sin_sum, cos_sum)
 
         # Distance to the final destination (helps the critic value states by
         # "how far from done", independent of next-waypoint noise)
@@ -340,13 +387,13 @@ class CarlaGymEnv(gym.Env):
             lane_offset = ldx * right_x + ldy * right_y
             lane_offset = float(np.clip(lane_offset, -5.0, 5.0))
 
-            vehicle_yaw = self.vehicle.get_transform().rotation.yaw
             heading_diff = vehicle_yaw - lane_tf.rotation.yaw
             heading_diff = ((heading_diff + 180) % 360) - 180  # Normalize to [-180, 180]
             heading_error = heading_diff * np.pi / 180
 
         return np.array([speed, distance_to_waypoint, angle_to_waypoint, distance_to_goal,
-                          lane_offset, heading_error], dtype=np.float32)
+                          lane_offset, heading_error, self.prev_steer, self.prev_throttle],
+                         dtype=np.float32)
 
     def _on_collision(self, event):
         self.crashed = True

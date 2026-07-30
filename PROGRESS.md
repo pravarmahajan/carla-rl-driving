@@ -29,6 +29,24 @@ the default `~/git/carla` (used to locate `agents.navigation.global_route_planne
   preserved progress. Reward/length trended upward across the run
   (159 → 257 → 296 avg reward across episode buckets) — no plateau evidence.
 
+- **Round 5 (complete)**: implemented all of "Reward/feature fixes" (#1
+  below): potential-based distance-to-goal shaping (`0.5 * (prev_dist - dist)`,
+  replacing the flat +10 waypoint bonus with a small +2 milestone bonus),
+  continuous per-tick lane_offset/heading_error penalty, previous
+  steer/throttle action appended to the observation (now 8-dim), multi-
+  waypoint lookahead (circular mean of heading error over next 5 waypoints
+  instead of just the next one), and `termination_reason` in `step()`'s info
+  dict + `EpisodeLoggerCallback` (crash/off_road/wrong_way/stall/timeout/success).
+  Observation space shape changed (6→8 dims), so `ppo_carla_model.zip` from
+  round 4 is incompatible — started fresh with `train.py --fresh` (log:
+  `train_round5.log`). Ran the full 50k timesteps cleanly (341 episodes),
+  model saved. `termination_reason` breakdown worked end-to-end (off_road and
+  wrong_way dominate; crash and stall much rarer) — first run with an exact
+  cause-of-death signal instead of inferring it from reward magnitude.
+  Note: the local TensorBoard instance had been left pointed at the old
+  pre-migration path (`.../PythonAPI/personal/logs/`) and needed restarting
+  against this repo's `./logs/` to show round 5's `PPO_1` run.
+
 ## Known issues identified (as of round 4)
 
 1. **Reward imbalance at longer routes**: flat +10 waypoint bonus means a

@@ -40,10 +40,12 @@ class EpisodeLoggerCallback(BaseCallback):
                 continue
 
             self.episode_count += 1
+            reason = info.get("termination_reason", "unknown")
 
             log_msg = (f"Episode {self.episode_count}: "
                       f"reward={episode_info['r']:.2f}, "
                       f"length={episode_info['l']} steps, "
+                      f"reason={reason}, "
                       f"total_timesteps={self.num_timesteps}\n")
 
             with open(self.log_file, "a") as f:
