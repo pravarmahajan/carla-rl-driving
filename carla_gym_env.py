@@ -20,8 +20,9 @@ from agents.navigation.global_route_planner import GlobalRoutePlanner
 class CarlaGymEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self):
+    def __init__(self, no_rendering=False):
         super(CarlaGymEnv, self).__init__()
+        self.no_rendering = no_rendering
 
         # Connect to your Dockerized CARLA Server
         self.client = carla.Client("127.0.0.1", 2000)
@@ -34,6 +35,14 @@ class CarlaGymEnv(gym.Env):
         settings = self.world.get_settings()
         settings.synchronous_mode = True
         settings.fixed_delta_seconds = 0.05  # 20 Hz
+        # no_rendering_mode is a server-wide setting, not per-client -- always
+        # set it explicitly (rather than leaving whatever a previous session
+        # left behind) so there's no cross-run leakage. Training never
+        # attaches a camera (only event-based collision/lane-invasion
+        # sensors), so disabling rendering entirely there skips CARLA's
+        # render-thread work per tick; drive.py needs it on for its camera
+        # feed, so it keeps the default (no_rendering=False).
+        settings.no_rendering_mode = no_rendering
         self.world.apply_settings(settings)
 
         # Route planner: resolves an actual point-A-to-point-B path along the road graph
@@ -453,4 +462,8 @@ class CarlaGymEnv(gym.Env):
         self._cleanup()
         settings = self.world.get_settings()
         settings.synchronous_mode = False
+        # Always restore rendering on exit, even if this instance disabled
+        # it -- it's a server-wide setting, so leaving it off would silently
+        # break camera output for whatever connects next (e.g. drive.py).
+        settings.no_rendering_mode = False
         self.world.apply_settings(settings)

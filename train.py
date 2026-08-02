@@ -197,7 +197,7 @@ if __name__ == "__main__":
     # (which is what we're doing here to get VecNormalize in front of it) --
     # without it, no "episode" info key ever gets set, so EpisodeLoggerCallback
     # and SB3's own rollout/ep_rew_mean stats silently never fire.
-    venv = DummyVecEnv([lambda: Monitor(CarlaGymEnv())])
+    venv = DummyVecEnv([lambda: Monitor(CarlaGymEnv(no_rendering=True))])
 
     if resume and os.path.exists(vecnormalize_path):
         print(f"Loading existing observation/reward normalization stats from {vecnormalize_path}...")
