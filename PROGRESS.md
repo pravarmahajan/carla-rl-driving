@@ -126,6 +126,33 @@ the default `~/git/carla` (used to locate `agents.navigation.global_route_planne
     the destination or overall route shape — added specifically to help
     diagnose the "doesn't reach the destination / doesn't turn at
     intersections" behavior from round 7.
+  - Fixed `drive.py`'s fixed-start spawn: a resting vehicle transform sits a
+    hair below true ground level (suspension compression), so re-spawning a
+    fresh vehicle at that exact z collided with the static road mesh itself
+    and silently fell back to a random spawn point every time -- fixed by
+    lifting the spawn z slightly and letting the existing settle-tick loop
+    drop it back down. Also switched drive.py to a fresh random route per
+    attempt instead of repeating one fixed route 3x, since the policy +
+    environment are deterministic and repeating an identical scenario just
+    reproduced the same trajectory every time. `drive.py` now also prints the
+    exact `termination_reason` per attempt instead of a coarser
+    reached-goal/crashed guess.
+  - **Found and fixed a wrong_way false-positive bug** using the corrected
+    per-attempt diagnostics: `termination_reason=wrong_way` was firing
+    immediately after legitimate turns at intersections, which is what had
+    looked like "doesn't turn" / "terminates as soon as it turns" in earlier
+    testing. Root cause: wrong-way detection compared the current lane's
+    OpenDrive `lane_id` sign against the sign recorded once at `reset()` --
+    but that sign convention only holds within a single road segment, not
+    across the whole route, so turning onto a different road at an
+    intersection could flip it and falsely flag a correct turn as wrong-way.
+    Replaced with a per-step check comparing the vehicle's heading against
+    its *current* lane's own local direction (`heading_error` from
+    `_get_observation()`); >90 degrees off means driving against that lane's
+    traffic flow, with no cross-road dependency. This is an environment/eval
+    fix, not a policy change -- round 7's checkpoint should be re-evaluated
+    with `drive.py` under the corrected logic before deciding whether
+    retraining is actually needed.
 
 ## Known issues identified (as of round 4)
 

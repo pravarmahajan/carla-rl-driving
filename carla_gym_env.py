@@ -157,13 +157,10 @@ class CarlaGymEnv(gym.Env):
         # Generate the route: fixed goal if provided, otherwise a random one
         self._generate_route(start_location, fixed_goal=fixed_goal)
 
-        # OpenDrive flips the sign of lane_id across the road centerline, so
-        # a sign flip relative to the start lane means we've crossed into
-        # oncoming traffic -- this catches wrong-way driving even on roads
-        # whose centerline markings aren't tagged correctly (a known gap in
-        # some CARLA town maps where the invasion sensor just never fires).
-        start_wp = self.map.get_waypoint(start_location, project_to_road=True)
-        self.start_lane_id_sign = np.sign(start_wp.lane_id) if start_wp is not None else 0
+        # Wrong-way detection itself happens per-step in step() by comparing
+        # the vehicle's heading to its *current* lane's local direction (see
+        # the comment there) -- nothing to precompute here beyond resetting
+        # the flag.
         self.wrong_way = False
 
         # Reset episode step counter
@@ -205,13 +202,6 @@ class CarlaGymEnv(gym.Env):
         current_waypoint = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=False)
         self.off_road = current_waypoint is None
 
-        # Wrong-way check via lane_id sign flip (see reset() for why).
-        self.wrong_way = False
-        if not self.off_road and self.start_lane_id_sign != 0:
-            on_road_wp = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=True)
-            if on_road_wp is not None and np.sign(on_road_wp.lane_id) != self.start_lane_id_sign:
-                self.wrong_way = True
-
         # Track the action that produced this new state, so it shows up as
         # "previous action" in the observation computed below.
         self.prev_steer = steer_action
@@ -219,6 +209,18 @@ class CarlaGymEnv(gym.Env):
 
         # 2. Extract new observation vectors
         obs = self._get_observation()
+
+        # Wrong-way check: compare the vehicle's heading to its *current*
+        # lane's own local direction (obs[5], from _get_observation()) --
+        # more than 90 degrees off means driving against that lane's traffic
+        # flow. This replaced an earlier version that compared the current
+        # lane's OpenDrive lane_id sign against the sign recorded once at
+        # reset(): that sign convention is only consistent within a single
+        # road segment, not across the whole route, so turning onto a
+        # different road at an intersection could flip it and falsely flag
+        # a perfectly correct turn as wrong-way -- this per-step, per-lane
+        # check has no such cross-road dependency.
+        self.wrong_way = (not self.off_road) and abs(obs[5]) > (np.pi / 2)
 
         # 3. Reward function: incentivize speed + following waypoints, penalize crashes
         velocity = self.vehicle.get_velocity()
