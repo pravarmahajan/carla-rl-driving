@@ -79,6 +79,14 @@ class CarlaGymEnv(gym.Env):
         super().reset(seed=seed)
         self._cleanup()  # Wipe out old actors from previous episodes
 
+        # A destroyed actor's collision footprint isn't actually cleared
+        # until the next tick -- without this, spawning at the same
+        # fixed_start transform used by the previous episode reliably fails
+        # with a collision RuntimeError, silently falling back to a random
+        # spawn point below (defeating the whole point of a fixed start/goal
+        # repeat, e.g. drive.py's multi-attempt comparison on one route).
+        self.world.tick()
+
         # Allow a fixed start/goal to be requested (e.g. to repeat the same
         # attempt multiple times). options = {"start_transform": carla.Transform,
         # "goal_location": carla.Location}
@@ -92,9 +100,26 @@ class CarlaGymEnv(gym.Env):
 
         if fixed_start is not None:
             try:
-                self.vehicle = self.world.spawn_actor(blueprint, fixed_start)
+                # fixed_start is usually a *resting* transform captured from
+                # a previously-settled vehicle (e.g. drive.py repeating the
+                # same route), whose z is a hair below true ground level from
+                # suspension compression -- spawning a fresh vehicle at that
+                # exact height collides with the static road mesh itself, not
+                # just a leftover actor, so lift it slightly and let the
+                # existing settle-tick loop below drop it back down.
+                lifted_start = carla.Transform(
+                    carla.Location(fixed_start.location.x, fixed_start.location.y,
+                                   fixed_start.location.z + 0.5),
+                    fixed_start.rotation
+                )
+                self.vehicle = self.world.spawn_actor(blueprint, lifted_start)
                 start_location = fixed_start.location
-            except RuntimeError:
+            except RuntimeError as e:
+                # Falls through to a random spawn below -- surfaced loudly
+                # since silently landing on a different start than requested
+                # defeats the purpose of asking for a fixed one.
+                print(f"! Failed to spawn at requested fixed_start ({fixed_start.location}): "
+                      f"{e} -- falling back to a random spawn point.")
                 self.vehicle = None
 
         if self.vehicle is None:

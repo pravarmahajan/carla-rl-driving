@@ -146,16 +146,6 @@ def main():
     print("✓ Loaded observation normalization stats" if normalizer is not None
           else "! No normalization stats found -- assuming an older, unnormalized model")
 
-    # Pick ONE start/goal pair by doing a throwaway reset, then reuse it for
-    # every attempt so all 3 tries are on the identical route.
-    env.reset()
-    start_transform = env.vehicle.get_transform()
-    goal_location = env.goal_location
-    print(f"Route fixed for this run: start={start_transform.location}, goal={goal_location}")
-
-    reset_options = {"start_transform": start_transform, "goal_location": goal_location}
-    minimap = MiniMap(env.waypoints, goal_location, start_transform.location)
-
     # Initialize pygame
     pygame.init()
     display = pygame.display.set_mode((800, 600))
@@ -168,8 +158,13 @@ def main():
 
     for attempt in range(num_attempts):
         print(f"\n--- Attempt {attempt + 1}/{num_attempts} ---")
-        obs, _ = env.reset(options=reset_options)
+        # Fresh random start/goal each attempt, so we see behavior across a
+        # variety of roads/turns instead of repeating one identical scenario
+        # (the policy + environment are deterministic, so re-running the same
+        # fixed route just reproduces the same trajectory every time).
+        obs, _ = env.reset()
         vehicle = env.vehicle
+        minimap = MiniMap(env.waypoints, env.goal_location, vehicle.get_transform().location)
 
         # Attach camera to newly spawned vehicle
         if camera is not None:
@@ -234,7 +229,7 @@ def main():
     pygame.quit()
 
     print("\n" + "=" * 60)
-    print("Summary over 3 attempts on the same route:")
+    print("Summary over 3 attempts (each on a different random route):")
     for i, (steps, reward, outcome) in enumerate(results):
         print(f"  Attempt {i + 1}: {steps:4d} steps, reward={reward:8.2f}, {outcome}")
     print("=" * 60)
