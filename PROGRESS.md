@@ -100,10 +100,14 @@ the default `~/git/carla` (used to locate `agents.navigation.global_route_planne
   **stays in its lane and follows curves properly** instead of drifting
   straight through them — the `VecNormalize` + reward-shaping combination
   seems to have fixed the "ignores curves" problem from round 5/6. Not
-  reaching the destination yet, and per user observation it also doesn't
-  execute turns at intersections (as opposed to following a gradual curve) --
-  suspect #2 below (limited waypoint lookahead) or that sharper turns need
-  more advance warning than gradual curves do. Full run: 150k timesteps,
+  reaching the destination yet. Correction to an earlier note in this log:
+  the car *does* attempt turns at intersections (that first impression was
+  wrong, likely formed while drive.py's fixed-start spawn bug was still
+  making attempts land in confusing/inconsistent spots) -- the real pattern,
+  confirmed after fixing drive.py and testing properly, is that episodes
+  often end mid-turn or shortly after one (terminating well short of the
+  1500-step cap, via an actual off_road/wrong_way/crash condition, not a
+  timeout) rather than failing to turn at all. Full run: 150k timesteps,
   ended with episode lengths in the 600-960+ step range (vs. ~100-200 in
   rounds 5/6) and rewards >1500 on some episodes — model + vecnormalize stats
   saved.

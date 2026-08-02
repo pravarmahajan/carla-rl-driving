@@ -173,7 +173,6 @@ def main():
 
         episode_reward = 0.0
         episode_steps = 0
-        reached_goal = False
 
         while True:
             for event in pygame.event.get():
@@ -185,7 +184,7 @@ def main():
             action, _ = model.predict(predict_obs, deterministic=True)
 
             # Step the environment
-            obs, reward, terminated, truncated, _ = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
 
             # Render camera feed and HUD
             display.fill((0, 0, 0))
@@ -213,14 +212,15 @@ def main():
                 print(f"  Step {episode_steps}: reward={episode_reward:.2f}")
 
             if terminated or truncated:
-                # Reached the goal iff all waypoints were consumed without crashing/stalling
-                reached_goal = (not env.crashed) and env.waypoint_index >= len(env.waypoints)
+                # Read the exact cause from the env instead of re-deriving a
+                # coarser guess here -- carla_gym_env.py already knows
+                # precisely why (crash/off_road/wrong_way/stall/timeout/success).
+                termination_reason = info.get("termination_reason", "unknown")
                 break
 
-        outcome = "REACHED GOAL" if reached_goal else ("CRASHED" if env.crashed else "DID NOT FINISH")
         print(f"✓ Attempt {attempt + 1} complete: {episode_steps} steps, "
-              f"reward={episode_reward:.2f}, outcome={outcome}")
-        results.append((episode_steps, episode_reward, outcome))
+              f"reward={episode_reward:.2f}, outcome={termination_reason}")
+        results.append((episode_steps, episode_reward, termination_reason))
 
     # Cleanup
     if camera is not None:
