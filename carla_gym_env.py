@@ -221,6 +221,15 @@ class CarlaGymEnv(gym.Env):
         # a perfectly correct turn as wrong-way -- this per-step, per-lane
         # check has no such cross-road dependency.
         self.wrong_way = (not self.off_road) and abs(obs[5]) > (np.pi / 2)
+        if self.wrong_way:
+            debug_wp = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=True)
+            vehicle_yaw = self.vehicle.get_transform().rotation.yaw
+            print(f"! wrong_way triggered: road_id={debug_wp.road_id if debug_wp else 'N/A'}, "
+                  f"lane_id={debug_wp.lane_id if debug_wp else 'N/A'}, "
+                  f"is_junction={debug_wp.is_junction if debug_wp else 'N/A'}, "
+                  f"lane_yaw={debug_wp.transform.rotation.yaw if debug_wp else float('nan'):.1f}, "
+                  f"vehicle_yaw={vehicle_yaw:.1f}, "
+                  f"heading_error_deg={math.degrees(obs[5]):.1f}")
 
         # 3. Reward function: incentivize speed + following waypoints, penalize crashes
         velocity = self.vehicle.get_velocity()
