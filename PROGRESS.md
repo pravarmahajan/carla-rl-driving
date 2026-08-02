@@ -153,6 +153,17 @@ the default `~/git/carla` (used to locate `agents.navigation.global_route_planne
     fix, not a policy change -- round 7's checkpoint should be re-evaluated
     with `drive.py` under the corrected logic before deciding whether
     retraining is actually needed.
+  - Still firing on `wrong_way` after that fix. Added debug logging (road_id,
+    lane_id, `is_junction`, lane heading, vehicle heading, heading_error) on
+    every `wrong_way` trigger, and confirmed via user testing that it's
+    consistently `is_junction=True`: a junction's connector lanes curve
+    rapidly, so the projected lane's local heading swings through the turn,
+    making a normal, correct turn transiently look >90 degrees "wrong" by
+    the same per-lane heading check. Fixed by skipping the wrong-way check
+    entirely while inside a junction -- `off_road` detection and the
+    lane-invasion sensor still catch bad driving once the vehicle exits back
+    onto a normal road segment. Also an environment/eval fix, not a policy
+    change.
 
 ## Known issues identified (as of round 4)
 

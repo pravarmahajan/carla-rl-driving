@@ -213,21 +213,22 @@ class CarlaGymEnv(gym.Env):
         # Wrong-way check: compare the vehicle's heading to its *current*
         # lane's own local direction (obs[5], from _get_observation()) --
         # more than 90 degrees off means driving against that lane's traffic
-        # flow. This replaced an earlier version that compared the current
-        # lane's OpenDrive lane_id sign against the sign recorded once at
-        # reset(): that sign convention is only consistent within a single
-        # road segment, not across the whole route, so turning onto a
-        # different road at an intersection could flip it and falsely flag
-        # a perfectly correct turn as wrong-way -- this per-step, per-lane
-        # check has no such cross-road dependency.
-        self.wrong_way = (not self.off_road) and abs(obs[5]) > (np.pi / 2)
+        # flow. Skipped entirely inside junctions: a junction's connector
+        # lanes curve rapidly and the projected lane's heading swings through
+        # the turn, so a normal, correct turn can transiently look >90
+        # degrees off even though nothing is wrong -- confirmed via debug
+        # logging that every false-positive fire was inside a junction.
+        # off_road detection and the lane-invasion sensor still catch bad
+        # driving once the vehicle exits back onto a normal road segment.
+        current_lane_wp = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=True)
+        in_junction = current_lane_wp.is_junction if current_lane_wp else False
+        self.wrong_way = (not self.off_road) and (not in_junction) and abs(obs[5]) > (np.pi / 2)
         if self.wrong_way:
-            debug_wp = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=True)
             vehicle_yaw = self.vehicle.get_transform().rotation.yaw
-            print(f"! wrong_way triggered: road_id={debug_wp.road_id if debug_wp else 'N/A'}, "
-                  f"lane_id={debug_wp.lane_id if debug_wp else 'N/A'}, "
-                  f"is_junction={debug_wp.is_junction if debug_wp else 'N/A'}, "
-                  f"lane_yaw={debug_wp.transform.rotation.yaw if debug_wp else float('nan'):.1f}, "
+            print(f"! wrong_way triggered: road_id={current_lane_wp.road_id if current_lane_wp else 'N/A'}, "
+                  f"lane_id={current_lane_wp.lane_id if current_lane_wp else 'N/A'}, "
+                  f"is_junction={in_junction}, "
+                  f"lane_yaw={current_lane_wp.transform.rotation.yaw if current_lane_wp else float('nan'):.1f}, "
                   f"vehicle_yaw={vehicle_yaw:.1f}, "
                   f"heading_error_deg={math.degrees(obs[5]):.1f}")
 
