@@ -1,6 +1,9 @@
 import argparse
+import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, CallbackList
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.monitor import Monitor
 from carla_gym_env import CarlaGymEnv
 import os
 
@@ -8,17 +11,87 @@ class PeriodicSaveCallback(BaseCallback):
     """Save to the canonical model path periodically during a long run, so
     drive.py always has access to the most recent checkpoint instead of only
     whatever was saved at the end of the previous completed run."""
-    def __init__(self, model_path, save_freq=10000):
+    def __init__(self, model_path, vecnormalize_path, save_freq=10000):
         super().__init__()
         self.model_path = model_path
+        self.vecnormalize_path = vecnormalize_path
         self.save_freq = save_freq
         self._last_save = 0
 
     def _on_step(self) -> bool:
         if self.num_timesteps - self._last_save >= self.save_freq:
             self.model.save(self.model_path)
+            self.training_env.save(self.vecnormalize_path)
             self._last_save = self.num_timesteps
         return True
+
+
+class PeriodicEvalCallback(BaseCallback):
+    """Run deterministic evaluation episodes on the *same* env/vehicle used
+    for training, at each rollout boundary. A truly separate eval env would
+    need its own CARLA vehicle in the same synchronous world -- but CARLA's
+    world.tick() advances every actor at once regardless of which client
+    issued it, so a second env ticking the world mid-rollout would drag the
+    idle training vehicle along with it (uncontrolled drift/crashes) and
+    desync its episode-step bookkeeping. Reusing the single training env
+    avoids that: this callback pauses collection, runs full eval episodes to
+    completion, then hands control back with fresh state.
+
+    Runs at rollout boundaries (not every step) so it never has to interrupt
+    a training episode mid-flight -- collect_rollouts() only calls
+    _on_rollout_end() between complete rollouts, never inside one.
+    """
+    def __init__(self, eval_freq_rollouts=5, n_eval_episodes=3):
+        super().__init__()
+        self.eval_freq_rollouts = eval_freq_rollouts
+        self.n_eval_episodes = n_eval_episodes
+        self._rollout_count = 0
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        self._rollout_count += 1
+        if self._rollout_count % self.eval_freq_rollouts != 0:
+            return
+
+        venv = self.training_env  # VecNormalize-wrapped DummyVecEnv, n_envs=1
+        venv.training = False  # freeze obs/reward running stats during eval
+
+        episode_rewards = []
+        episode_lengths = []
+        successes = 0
+
+        obs = venv.reset()
+        for _ in range(self.n_eval_episodes):
+            episode_reward = 0.0
+            episode_length = 0
+            while True:
+                action, _ = self.model.predict(obs, deterministic=True)
+                obs, _, dones, infos = venv.step(action)
+                # Use the un-normalized reward for a human-comparable metric --
+                # VecNormalize's step() return value is reward-normalized.
+                episode_reward += venv.get_original_reward()[0]
+                episode_length += 1
+                if dones[0]:
+                    if infos[0].get("termination_reason") == "success":
+                        successes += 1
+                    break
+            episode_rewards.append(episode_reward)
+            episode_lengths.append(episode_length)
+
+        self.logger.record("eval/mean_reward", float(np.mean(episode_rewards)))
+        self.logger.record("eval/mean_length", float(np.mean(episode_lengths)))
+        self.logger.record("eval/success_rate", successes / self.n_eval_episodes)
+        self.logger.dump(self.num_timesteps)
+
+        venv.training = True
+        # We've been driving the vec env directly (outside collect_rollouts),
+        # so the algorithm's cached "last obs" is now stale. Reset and hand
+        # back fresh state -- otherwise the next rollout would start from an
+        # observation that no longer matches the env's actual state.
+        self.model._last_obs = venv.reset()
+        self.model._last_episode_starts = np.ones((venv.num_envs,), dtype=bool)
 
 
 class EpisodeLoggerCallback(BaseCallback):
@@ -82,17 +155,36 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    # Create the customized environment
-    env = CarlaGymEnv()
-
     # Define a state-saving directory for tensorboard logs
     logdir = "./logs/"
     os.makedirs(logdir, exist_ok=True)
 
+    vecnormalize_path = args.model_path + "_vecnormalize.pkl"
+
     model_zip = args.model_path + ".zip"
-    if not args.fresh and os.path.exists(model_zip):
+    resume = not args.fresh and os.path.exists(model_zip)
+
+    # VecNormalize needs a VecEnv underneath it -- DummyVecEnv with a single
+    # env is the standard way to get one out of a plain gym.Env. Monitor must
+    # wrap the env *before* DummyVecEnv: SB3 only auto-adds it when you hand
+    # PPO a raw gym.Env, not when you hand it an already-vectorized VecEnv
+    # (which is what we're doing here to get VecNormalize in front of it) --
+    # without it, no "episode" info key ever gets set, so EpisodeLoggerCallback
+    # and SB3's own rollout/ep_rew_mean stats silently never fire.
+    venv = DummyVecEnv([lambda: Monitor(CarlaGymEnv())])
+
+    if resume and os.path.exists(vecnormalize_path):
+        print(f"Loading existing observation/reward normalization stats from {vecnormalize_path}...")
+        venv = VecNormalize.load(vecnormalize_path, venv)
+    else:
+        # norm_reward clips/normalizes the reward *fed to PPO's advantage
+        # estimation*, not the raw reward logged in episode_log.txt/TensorBoard
+        # (those come from the original, unnormalized `info["episode"]`).
+        venv = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=args.gamma)
+
+    if resume:
         print(f"Loading existing model from {model_zip} to continue training...")
-        model = PPO.load(args.model_path, env=env, tensorboard_log=logdir)
+        model = PPO.load(args.model_path, env=venv, tensorboard_log=logdir)
         # Hyperparameters below only take effect for a fresh model; loaded
         # models keep whatever they were originally trained with unless
         # explicitly overridden here.
@@ -102,7 +194,7 @@ if __name__ == "__main__":
         # "MlpPolicy" tells SB3 to look at your vector space (instead of image/CNN pixels)
         model = PPO(
             "MlpPolicy",
-            env,
+            venv,
             verbose=0,
             tensorboard_log=logdir,
             n_steps=args.n_steps,
@@ -121,12 +213,16 @@ if __name__ == "__main__":
 
     callback = CallbackList([
         EpisodeLoggerCallback(),
-        PeriodicSaveCallback(args.model_path, save_freq=10000),
+        PeriodicSaveCallback(args.model_path, vecnormalize_path, save_freq=10000),
+        PeriodicEvalCallback(eval_freq_rollouts=5, n_eval_episodes=3),
     ])
     model.learn(total_timesteps=args.total_timesteps, callback=callback, reset_num_timesteps=False)
 
-    # Save your trained neural weights
+    # Save your trained neural weights + the matching normalization stats
+    # (drive.py/eval.py need both to reproduce the same obs distribution the
+    # policy was trained on).
     model.save(args.model_path)
+    venv.save(vecnormalize_path)
     print("Model saved successfully!")
 
-    env.close()
+    venv.close()

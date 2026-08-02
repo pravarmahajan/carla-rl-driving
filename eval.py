@@ -5,10 +5,25 @@ Collects metrics: mean/std reward, success rate (episodes without crashes).
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from carla_gym_env import CarlaGymEnv
 import numpy as np
+import os
 
-def evaluate_model(model, env, n_episodes=10):
+
+def load_normalizer(env, vecnormalize_path):
+    """Load the obs normalization stats saved alongside a trained model, so
+    inference sees the same normalized observation distribution the policy
+    was trained on. Wraps the *existing* env instance (not a fresh one) --
+    we only use the returned object's normalize_obs(), never step/reset it,
+    so this doesn't touch CARLA or spawn anything extra."""
+    if not os.path.exists(vecnormalize_path):
+        return None
+    dummy = DummyVecEnv([lambda: env])
+    return VecNormalize.load(vecnormalize_path, dummy)
+
+
+def evaluate_model(model, env, normalizer=None, n_episodes=10):
     """
     Custom evaluation: run episodes and track crashes + rewards.
     """
@@ -22,7 +37,8 @@ def evaluate_model(model, env, n_episodes=10):
         episode_length = 0
 
         while True:
-            action, _ = model.predict(obs, deterministic=True)
+            predict_obs = normalizer.normalize_obs(obs) if normalizer is not None else obs
+            action, _ = model.predict(predict_obs, deterministic=True)
             obs, reward, terminated, truncated, _ = env.step(action)
 
             episode_reward += reward
@@ -63,8 +79,12 @@ def main():
     model = PPO.load("ppo_carla_model", env=env)
     print("✓ Model loaded: ppo_carla_model\n")
 
+    normalizer = load_normalizer(env, "ppo_carla_model_vecnormalize.pkl")
+    print("✓ Loaded observation normalization stats" if normalizer is not None
+          else "! No normalization stats found -- assuming an older, unnormalized model\n")
+
     print("Running 10 evaluation episodes...")
-    metrics = evaluate_model(model, env, n_episodes=10)
+    metrics = evaluate_model(model, env, normalizer=normalizer, n_episodes=10)
 
     env.close()
 

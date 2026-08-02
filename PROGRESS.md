@@ -47,6 +47,64 @@ the default `~/git/carla` (used to locate `agents.navigation.global_route_planne
   pre-migration path (`.../PythonAPI/personal/logs/`) and needed restarting
   against this repo's `./logs/` to show round 5's `PPO_1` run.
 
+- **Round 6 (in progress)**: continued training from round 5's checkpoint for
+  200k more timesteps (`train.py --total-timesteps 200000`, no `--fresh` —
+  same 8-dim obs space, so the checkpoint loads directly), to see if reward
+  keeps improving with more exposure now that the network isn't starting from
+  scratch. Reason: round 5 alone (50k steps, 341 episodes) still had 90% of
+  episodes ending in off_road/wrong_way and only 1 success, but that's
+  expected to be undertrained rather than a reward-design flaw given the obs
+  space reset. Log: `train_round6.log`.
+- **Dashboard review during round 6 / planned round 7 changes**: watching
+  TensorBoard mid-run raised two real gaps:
+  - `train/value_loss` isn't decreasing — likely because observations aren't
+    normalized (obs dims span wildly different scales: speed 0-50,
+    distance 0-500, angles -π..π, actions -1..1), which is a classic cause of
+    a value net struggling to fit. Fix: wrap the env in SB3's `VecNormalize`.
+  - No held-out/deterministic evaluation signal distinct from the noisy
+    per-episode training rollout stats. Fix: a periodic deterministic-eval
+    callback, logged to a separate `eval/` TensorBoard tab.
+  Both implemented in `train.py` for round 7 onward (not applied retroactively
+  to the in-progress round 6 run):
+  - `VecNormalize` (`norm_obs=True, norm_reward=True, clip_obs=10.0`) wrapping
+    a `DummyVecEnv`-wrapped `CarlaGymEnv`. Stats saved/loaded alongside the
+    model as `<model_path>_vecnormalize.pkl` (gitignored, regenerated).
+    `eval.py`/`drive.py` updated to load these stats and normalize
+    observations before `model.predict()` — required for correctness, since a
+    policy trained on normalized inputs behaves wrongly if fed raw ones at
+    inference time.
+  - `PeriodicEvalCallback`: runs 3 deterministic episodes every 5 rollouts
+    (~10k timesteps) on the *same* training env/vehicle (not a second one —
+    CARLA's synchronous `world.tick()` advances every actor at once
+    regardless of which client calls it, so a second vehicle ticking the
+    world mid-rollout would drag the idle training vehicle along with it).
+    Logs `eval/mean_reward`, `eval/mean_length`, `eval/success_rate` to a
+    separate TensorBoard tab from the noisy per-episode `episode/*` stats.
+
+- **Round 7 (in progress, promising)**: fresh run (`--fresh`, new
+  `VecNormalize` wrapping changes the input distribution enough that resuming
+  round 6's checkpoint would've been effectively a reset anyway) with the
+  `VecNormalize` + `PeriodicEvalCallback` changes above. Log: `train_round7.log`.
+  Hit a real bug on first launch: manually building the `VecEnv` ourselves
+  (needed to insert `VecNormalize`) meant SB3 no longer auto-wrapped the env
+  in `Monitor` (that auto-wrap only happens when you hand PPO a raw `gym.Env`,
+  not an already-vectorized one) — so no `info["episode"]` key ever got set,
+  silently breaking `EpisodeLoggerCallback` *and* SB3's own
+  `rollout/ep_rew_mean` stats (confirmed via TensorBoard's event tags: only
+  `train/*` and our `eval/*` existed, no `rollout/*`). Fixed by explicitly
+  wrapping `Monitor(CarlaGymEnv())` before `DummyVecEnv`, then restarted.
+  Early results after the fix (~20k timesteps in) are the best yet:
+  `train/value_loss` actually low with `explained_variance≈0.67` (vs. never
+  decreasing before `VecNormalize`), `eval/mean_length` far longer than any
+  prior round, and qualitatively (per user observation driving it) it now
+  **stays in its lane and follows curves properly** instead of drifting
+  straight through them — the `VecNormalize` + reward-shaping combination
+  seems to have fixed the "ignores curves" problem from round 5/6. Not
+  reaching the destination yet, and per user observation it also doesn't
+  execute turns at intersections (as opposed to following a gradual curve) --
+  suspect #2 below (limited waypoint lookahead) or that sharper turns need
+  more advance warning than gradual curves do.
+
 ## Known issues identified (as of round 4)
 
 1. **Reward imbalance at longer routes**: flat +10 waypoint bonus means a

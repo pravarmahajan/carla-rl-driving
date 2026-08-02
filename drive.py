@@ -4,6 +4,7 @@ Displays the vehicle's camera feed in a pygame window.
 """
 
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from carla_gym_env import CarlaGymEnv
 import carla
 import pygame
@@ -11,6 +12,18 @@ import numpy as np
 import weakref
 import os
 import datetime
+
+
+def load_normalizer(env, vecnormalize_path):
+    """Load the obs normalization stats saved alongside a trained model, so
+    inference sees the same normalized observation distribution the policy
+    was trained on. Wraps the *existing* env instance (not a fresh one) --
+    we only use the returned object's normalize_obs(), never step/reset it,
+    so this doesn't touch CARLA or spawn anything extra."""
+    if not os.path.exists(vecnormalize_path):
+        return None
+    dummy = DummyVecEnv([lambda: env])
+    return VecNormalize.load(vecnormalize_path, dummy)
 
 class CameraCapture:
     """Captures camera images from the vehicle and stores latest frame."""
@@ -76,6 +89,10 @@ def main():
     model = PPO.load(model_path, env=env)
     print(f"✓ Model loaded: {model_path}.zip (saved {mtime:%Y-%m-%d %H:%M:%S})")
 
+    normalizer = load_normalizer(env, model_path + "_vecnormalize.pkl")
+    print("✓ Loaded observation normalization stats" if normalizer is not None
+          else "! No normalization stats found -- assuming an older, unnormalized model")
+
     # Pick ONE start/goal pair by doing a throwaway reset, then reuse it for
     # every attempt so all 3 tries are on the identical route.
     env.reset()
@@ -115,7 +132,8 @@ def main():
                     raise KeyboardInterrupt()
 
             # Get action from trained policy
-            action, _ = model.predict(obs, deterministic=True)
+            predict_obs = normalizer.normalize_obs(obs) if normalizer is not None else obs
+            action, _ = model.predict(predict_obs, deterministic=True)
 
             # Step the environment
             obs, reward, terminated, truncated, _ = env.step(action)
