@@ -11,6 +11,7 @@ import pygame
 import numpy as np
 import weakref
 import os
+import math
 import datetime
 
 
@@ -69,6 +70,58 @@ class CameraCapture:
             self.camera.destroy()
 
 
+class MiniMap:
+    """Top-down route map (route line, start, goal, live vehicle position +
+    heading) drawn in a corner of the window. The front-facing camera alone
+    gives no sense of where the destination is or how much route remains --
+    this answers "is it actually heading toward the goal" at a glance."""
+    def __init__(self, waypoints, goal_location, start_location, size=240, margin=14):
+        self.size = size
+        self.margin = margin
+        self.route_points = [(wp.transform.location.x, wp.transform.location.y) for wp in waypoints]
+        self.start = (start_location.x, start_location.y)
+        self.goal = (goal_location.x, goal_location.y)
+
+        xs = [p[0] for p in self.route_points] + [self.start[0], self.goal[0]]
+        ys = [p[1] for p in self.route_points] + [self.start[1], self.goal[1]]
+        pad = 10.0
+        self.min_x, self.max_x = min(xs) - pad, max(xs) + pad
+        self.min_y, self.max_y = min(ys) - pad, max(ys) + pad
+
+    def _to_px(self, x, y):
+        span_x = max(self.max_x - self.min_x, 1e-3)
+        span_y = max(self.max_y - self.min_y, 1e-3)
+        scale = min((self.size - 2 * self.margin) / span_x, (self.size - 2 * self.margin) / span_y)
+        px = self.margin + (x - self.min_x) * scale
+        py = self.margin + (y - self.min_y) * scale
+        return int(px), int(py)
+
+    def render(self, display, vehicle_transform, top_left):
+        surface = pygame.Surface((self.size, self.size))
+        surface.fill((25, 25, 25))
+
+        route_px = [self._to_px(x, y) for x, y in self.route_points]
+        if len(route_px) > 1:
+            pygame.draw.lines(surface, (110, 110, 110), False, route_px, 2)
+
+        sx, sy = self._to_px(*self.start)
+        pygame.draw.circle(surface, (80, 160, 255), (sx, sy), 4)
+
+        gx, gy = self._to_px(*self.goal)
+        pygame.draw.circle(surface, (230, 50, 50), (gx, gy), 6)
+        pygame.draw.circle(surface, (255, 255, 255), (gx, gy), 6, 1)
+
+        vx, vy = self._to_px(vehicle_transform.location.x, vehicle_transform.location.y)
+        yaw_rad = math.radians(vehicle_transform.rotation.yaw)
+        tip = (vx + 9 * math.cos(yaw_rad), vy + 9 * math.sin(yaw_rad))
+        left = (vx + 5 * math.cos(yaw_rad + 2.5), vy + 5 * math.sin(yaw_rad + 2.5))
+        right = (vx + 5 * math.cos(yaw_rad - 2.5), vy + 5 * math.sin(yaw_rad - 2.5))
+        pygame.draw.polygon(surface, (255, 220, 0), [tip, left, right])
+
+        pygame.draw.rect(surface, (200, 200, 200), surface.get_rect(), 1)
+        display.blit(surface, top_left)
+
+
 def render_to_pygame(image, display):
     """Convert numpy RGB image to pygame surface and render."""
     if image is None:
@@ -101,6 +154,7 @@ def main():
     print(f"Route fixed for this run: start={start_transform.location}, goal={goal_location}")
 
     reset_options = {"start_transform": start_transform, "goal_location": goal_location}
+    minimap = MiniMap(env.waypoints, goal_location, start_transform.location)
 
     # Initialize pygame
     pygame.init()
@@ -150,6 +204,8 @@ def main():
                 True, (255, 255, 255)
             )
             display.blit(text, (10, 10))
+
+            minimap.render(display, vehicle.get_transform(), top_left=(800 - 240 - 10, 10))
 
             pygame.display.flip()
             clock.tick(20)  # 20 FPS for visibility

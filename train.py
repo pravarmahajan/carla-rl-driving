@@ -1,5 +1,6 @@
 import argparse
 import numpy as np
+import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, CallbackList
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -61,17 +62,26 @@ class PeriodicEvalCallback(BaseCallback):
         episode_rewards = []
         episode_lengths = []
         successes = 0
+        squared_value_errors = []
 
         obs = venv.reset()
         for _ in range(self.n_eval_episodes):
             episode_reward = 0.0
             episode_length = 0
+            step_values = []
+            step_rewards = []
             while True:
+                obs_tensor, _ = self.model.policy.obs_to_tensor(obs)
+                with torch.no_grad():
+                    value_pred = self.model.policy.predict_values(obs_tensor).cpu().numpy().flatten()[0]
                 action, _ = self.model.predict(obs, deterministic=True)
                 obs, _, dones, infos = venv.step(action)
                 # Use the un-normalized reward for a human-comparable metric --
                 # VecNormalize's step() return value is reward-normalized.
-                episode_reward += venv.get_original_reward()[0]
+                reward = venv.get_original_reward()[0]
+                step_values.append(value_pred)
+                step_rewards.append(reward)
+                episode_reward += reward
                 episode_length += 1
                 if dones[0]:
                     if infos[0].get("termination_reason") == "success":
@@ -80,9 +90,25 @@ class PeriodicEvalCallback(BaseCallback):
             episode_rewards.append(episode_reward)
             episode_lengths.append(episode_length)
 
+            # Empirical discounted return realized from each step to the end
+            # of this (deterministic, held-out) episode, compared against
+            # what the critic predicted for that step at the time -- a
+            # value-loss signal computed off-policy from eval data, distinct
+            # from train/value_loss (fit only to noisy on-policy GAE targets
+            # from the training rollout). Treats truncation the same as
+            # termination (no bootstrapped tail) -- a reasonable
+            # approximation for a diagnostic, not used for any gradient.
+            returns = np.zeros(len(step_rewards))
+            running_return = 0.0
+            for t in reversed(range(len(step_rewards))):
+                running_return = step_rewards[t] + self.model.gamma * running_return
+                returns[t] = running_return
+            squared_value_errors.extend((np.array(step_values) - returns) ** 2)
+
         self.logger.record("eval/mean_reward", float(np.mean(episode_rewards)))
         self.logger.record("eval/mean_length", float(np.mean(episode_lengths)))
         self.logger.record("eval/success_rate", successes / self.n_eval_episodes)
+        self.logger.record("eval/value_loss", float(np.mean(squared_value_errors)))
         self.logger.dump(self.num_timesteps)
 
         venv.training = True

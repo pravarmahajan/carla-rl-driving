@@ -81,7 +81,7 @@ the default `~/git/carla` (used to locate `agents.navigation.global_route_planne
     Logs `eval/mean_reward`, `eval/mean_length`, `eval/success_rate` to a
     separate TensorBoard tab from the noisy per-episode `episode/*` stats.
 
-- **Round 7 (in progress, promising)**: fresh run (`--fresh`, new
+- **Round 7 (complete, big improvement)**: fresh run (`--fresh`, new
   `VecNormalize` wrapping changes the input distribution enough that resuming
   round 6's checkpoint would've been effectively a reset anyway) with the
   `VecNormalize` + `PeriodicEvalCallback` changes above. Log: `train_round7.log`.
@@ -103,7 +103,25 @@ the default `~/git/carla` (used to locate `agents.navigation.global_route_planne
   reaching the destination yet, and per user observation it also doesn't
   execute turns at intersections (as opposed to following a gradual curve) --
   suspect #2 below (limited waypoint lookahead) or that sharper turns need
-  more advance warning than gradual curves do.
+  more advance warning than gradual curves do. Full run: 150k timesteps,
+  ended with episode lengths in the 600-960+ step range (vs. ~100-200 in
+  rounds 5/6) and rewards >1500 on some episodes — model + vecnormalize stats
+  saved.
+- **Post-round-7 tooling additions**:
+  - `PeriodicEvalCallback` now also logs `eval/value_loss`: for each
+    deterministic eval step, compares the critic's predicted value against
+    the empirical discounted return actually realized for the rest of that
+    episode (computed from the un-normalized rewards, treating truncation
+    like termination as an approximation). This is a value-loss signal
+    computed on held-out, deterministic data — distinct from
+    `train/value_loss`, which only ever sees noisy on-policy GAE targets from
+    the training rollout itself.
+  - `drive.py` now renders a top-down `MiniMap` in the corner of the window
+    (route line, start, goal, live vehicle position/heading) alongside the
+    camera feed, since the camera alone gives no sense of progress toward
+    the destination or overall route shape — added specifically to help
+    diagnose the "doesn't reach the destination / doesn't turn at
+    intersections" behavior from round 7.
 
 ## Known issues identified (as of round 4)
 
