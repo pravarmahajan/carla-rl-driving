@@ -5,6 +5,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, CallbackList
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.utils import get_schedule_fn
 from carla_gym_env import CarlaGymEnv
 import os
 
@@ -76,11 +77,21 @@ class PeriodicEvalCallback(BaseCallback):
                     value_pred = self.model.policy.predict_values(obs_tensor).cpu().numpy().flatten()[0]
                 action, _ = self.model.predict(obs, deterministic=True)
                 obs, _, dones, infos = venv.step(action)
-                # Use the un-normalized reward for a human-comparable metric --
-                # VecNormalize's step() return value is reward-normalized.
+                # Un-normalized reward for the human-comparable eval/mean_reward
+                # metric -- VecNormalize's step() return value is reward-normalized.
                 reward = venv.get_original_reward()[0]
+                # value_pred above came from the critic, which was trained to
+                # predict returns on VecNormalize's *normalized* reward scale
+                # (norm_reward=True) -- comparing it against a return built
+                # from raw rewards was comparing different units entirely
+                # (e.g. eval/value_loss reading ~1e5 while train/value_loss
+                # read ~0.1). Normalize each reward the same way VecNormalize
+                # does before accumulating the return, so both sides of the
+                # squared-error comparison are in the scale the critic
+                # actually learned.
+                normalized_reward = float(venv.normalize_reward(np.array([reward]))[0])
                 step_values.append(value_pred)
-                step_rewards.append(reward)
+                step_rewards.append(normalized_reward)
                 episode_reward += reward
                 episode_length += 1
                 if dones[0]:
@@ -166,7 +177,10 @@ def parse_args():
     parser.add_argument("--n-epochs", type=int, default=10, help="Gradient epochs per rollout")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
+    parser.add_argument("--gamma", type=float, default=0.995,
+                         help="Discount factor (round 12: 0.99 -> 0.995 -- combined with "
+                              "action_repeat=4 in carla_gym_env.py, extends PPO's effective "
+                              "horizon enough for the +500 success bonus to actually be visible)")
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda")
     parser.add_argument("--clip-range", type=float, default=0.2)
     parser.add_argument("--vf-coef", type=float, default=0.5, help="Value loss weight")
@@ -214,7 +228,13 @@ if __name__ == "__main__":
         # Hyperparameters below only take effect for a fresh model; loaded
         # models keep whatever they were originally trained with unless
         # explicitly overridden here.
+        # SB3 reads the LR from self.lr_schedule (a callable), not from
+        # self.learning_rate directly -- setting the latter alone here was a
+        # no-op that silently kept every resumed run on its original
+        # schedule regardless of --learning-rate. get_schedule_fn wraps a
+        # constant into the callable form SB3's optimizer actually consults.
         model.learning_rate = args.learning_rate
+        model.lr_schedule = get_schedule_fn(args.learning_rate)
     else:
         print("Starting a fresh model.")
         # "MlpPolicy" tells SB3 to look at your vector space (instead of image/CNN pixels)

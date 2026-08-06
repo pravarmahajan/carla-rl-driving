@@ -66,23 +66,51 @@ class CarlaGymEnv(gym.Env):
         self.prev_throttle = 0.0
         self.waypoint_lookahead = 5  # Average heading/curvature over next N waypoints
 
-        # 1. Define Action Space: Continuous values for [Steering (-1.0 to 1.0), Throttle (0.0 to 1.0)]
+        # Round 12: each RL decision is now held for `action_repeat` physical
+        # CARLA ticks (20 Hz -> 5 Hz effective decision rate) instead of one.
+        # This structurally caps how often steering can change direction (the
+        # policy literally cannot whip the wheel every 50ms anymore), and
+        # extends PPO's effective time horizon (gamma^n_decisions covers
+        # action_repeat times more real seconds) without needing an extreme
+        # gamma value. Steering is additionally low-pass filtered tick-to-tick
+        # within each repeat window so the *applied* control changes smoothly
+        # even though the sampled action itself is noisy -- this replaces the
+        # old reward-based steering-smoothness penalty (which was taxing the
+        # policy's own Gaussian exploration noise and fighting ent_coef; see
+        # PROGRESS.md round 12).
+        self.action_repeat = 4
+        self.steer_lowpass_alpha = 0.3  # applied = 0.7*prev + 0.3*raw each tick
+
+        # 1. Define Action Space: Continuous values for [Steering (-1.0 to
+        # 1.0), Throttle (0.0 to 1.0), Brake (0.0 to 1.0)]. Brake used to be
+        # hardcoded to 0.0 in step() -- the agent had no way to slow down for
+        # an obstacle, only steer/accelerate.
         self.action_space = spaces.Box(
-            low=np.array([-1.0, 0.0]),
-            high=np.array([1.0, 1.0]),
+            low=np.array([-1.0, 0.0, 0.0]),
+            high=np.array([1.0, 1.0, 1.0]),
             dtype=np.float32
         )
+
+        self.obstacle_lookahead = 30.0  # meters; also the "nothing detected" sentinel value
 
         # 2. Define Observation Space: Real values
         # [Forward Speed (km/h), Distance to next waypoint (m),
         #  Angle diff averaged over next N waypoints (rad), Distance to final goal (m),
         #  Lateral offset from lane center (m), Heading error vs. road direction (rad),
-        #  Previous steer action, Previous throttle action]
+        #  Previous steer action, Previous throttle action,
+        #  Distance to nearest obstacle ahead (m, capped/sentinel at obstacle_lookahead)]
         self.observation_space = spaces.Box(
-            low=np.array([0.0, 0.0, -np.pi, 0.0, -5.0, -np.pi, -1.0, 0.0]),
-            high=np.array([50.0, 200.0, np.pi, 500.0, 5.0, np.pi, 1.0, 1.0]),
+            low=np.array([0.0, 0.0, -np.pi, 0.0, -5.0, -np.pi, -1.0, 0.0, 0.0]),
+            high=np.array([50.0, 200.0, np.pi, 500.0, 5.0, np.pi, 1.0, 1.0, self.obstacle_lookahead]),
             dtype=np.float32
         )
+
+        # Static level geometry (e.g. parked-car props baked into the map)
+        # doesn't move and isn't a CARLA Actor, so it never shows up in
+        # world.get_actors() -- it has to be queried separately via
+        # get_level_bbs(). Cached once at construction since it's fixed for
+        # the lifetime of the loaded map.
+        self.static_vehicle_bboxes = list(self.world.get_level_bbs(carla.CityObjectLabel.Car))
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -189,148 +217,216 @@ class CarlaGymEnv(gym.Env):
         return obs, info
 
     def step(self, action):
-        # 1. Apply actions predicted by Stable-Baselines3
+        # 1. Unpack the RL action once -- held fixed (steer additionally
+        # low-pass filtered tick-to-tick, see __init__) across
+        # self.action_repeat physical CARLA ticks below. Round 12: this
+        # replaces the old single-tick-per-decision loop.
         steer_action = float(action[0])
         throttle_action = float(action[1])
+        brake_action = float(action[2])
 
-        control = carla.VehicleControl(throttle=throttle_action, steer=steer_action, brake=0.0)
-        self.vehicle.apply_control(control)
-
-        # Reset the per-step lane invasion flag before ticking -- the sensor
-        # callback will set it if a solid marking is crossed during this tick.
-        self.lane_invaded_this_step = False
-
-        # Synchronous tick
-        self.world.tick()
-        self.episode_steps += 1
-
-        # Off-road check: project_to_road=False returns None when the vehicle's
-        # location isn't inside any drivable lane (e.g. drove off the road
-        # entirely, onto grass/sidewalk with no lane marking to trigger the
-        # lane invasion sensor).
-        current_waypoint = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=False)
-        self.off_road = current_waypoint is None
-
-        # Track the action that produced this new state, so it shows up as
-        # "previous action" in the observation computed below.
-        self.prev_steer = steer_action
-        self.prev_throttle = throttle_action
-
-        # 2. Extract new observation vectors
-        obs = self._get_observation()
-
-        # Wrong-way check: compare the vehicle's heading to its *current*
-        # lane's own local direction (obs[5], from _get_observation()) --
-        # more than 90 degrees off means driving against that lane's traffic
-        # flow. Skipped entirely inside junctions: a junction's connector
-        # lanes curve rapidly and the projected lane's heading swings through
-        # the turn, so a normal, correct turn can transiently look >90
-        # degrees off even though nothing is wrong -- confirmed via debug
-        # logging that every false-positive fire was inside a junction.
-        # off_road detection and the lane-invasion sensor still catch bad
-        # driving once the vehicle exits back onto a normal road segment.
-        current_lane_wp = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=True)
-        in_junction = current_lane_wp.is_junction if current_lane_wp else False
-        self.wrong_way = (not self.off_road) and (not in_junction) and abs(obs[5]) > (np.pi / 2)
-        if self.wrong_way:
-            vehicle_yaw = self.vehicle.get_transform().rotation.yaw
-            print(f"! wrong_way triggered: road_id={current_lane_wp.road_id if current_lane_wp else 'N/A'}, "
-                  f"lane_id={current_lane_wp.lane_id if current_lane_wp else 'N/A'}, "
-                  f"is_junction={in_junction}, "
-                  f"lane_yaw={current_lane_wp.transform.rotation.yaw if current_lane_wp else float('nan'):.1f}, "
-                  f"vehicle_yaw={vehicle_yaw:.1f}, "
-                  f"heading_error_deg={math.degrees(obs[5]):.1f}")
-
-        # 3. Reward function: incentivize speed + following waypoints, penalize crashes
-        velocity = self.vehicle.get_velocity()
-        speed = 3.6 * np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)  # km/h
-
-        reward = speed * 0.1  # Base reward for moving
-        reward -= 0.01  # Small per-step penalty to encourage efficiency
-
-        # Penalty for idling (not moving AND not accelerating)
-        if speed < 1.0 and throttle_action < 0.1:
-            reward -= 0.3  # Mild penalty for laziness
-
-        # Potential-based shaping on distance-to-goal: telescopes to a total
-        # bounded by net distance closed over the episode, independent of
-        # route length -- unlike a flat per-waypoint bonus, this can't dwarf
-        # the terminal crash/off-road penalties on long routes.
-        distance_to_goal = obs[3]
-        reward += 0.5 * (self.prev_distance_to_goal - distance_to_goal)
-        self.prev_distance_to_goal = float(distance_to_goal)
-
-        # Advance waypoint if we're close enough (only if actually moving).
-        # Small fixed bonus kept as a milestone signal, not the main reward driver.
-        if len(self.waypoints) > self.waypoint_index:
-            distance_to_waypoint = obs[1]
-            if distance_to_waypoint < 2.0 and speed > 2.0:  # Within 2m AND moving at least 2 km/h
-                self.waypoint_index += 1
-                reward += 2.0
-
-        # Reward for heading toward waypoint (only if moving)
-        if speed > 1.0:  # Only reward steering when actually moving
-            angle_error = abs(obs[2])
-            reward += max(0, 0.5 - angle_error / np.pi) * 0.5  # Reduced bonus
-
-        # Continuous penalty for drifting off lane center / misaligning with
-        # road heading, instead of relying solely on the sparse lane-invasion
-        # event -- gives a per-tick gradient toward staying centered.
-        lane_offset = obs[4]
-        heading_error = obs[5]
-        reward -= 0.05 * abs(lane_offset)
-        reward -= 0.1 * abs(heading_error)
-
-        # Penalize crossing a solid lane marking (wrong-lane / off-road edge)
-        if self.lane_invaded_this_step:
-            reward -= 2.0
-
+        total_reward = 0.0
         terminated = False
         truncated = False
         termination_reason = None
+        obs = None
 
-        # 4. Check terminal criteria
-        # Track sustained stalling (full throttle, not moving) rather than a
-        # single-step snapshot -- right after reset/spawn, speed is legitimately
-        # near 0 for the first few ticks while the car is still accelerating
-        # from a standstill, so a one-step check falsely flags that as "stuck".
-        if speed < 0.1 and self.vehicle.get_control().throttle > 0.5:
-            self.stall_counter += 1
-        else:
-            self.stall_counter = 0
+        for _ in range(self.action_repeat):
+            # Low-pass filter the *applied* steer toward the sampled action
+            # instead of jumping straight to it -- smooths out the physical
+            # control even when the sampled action itself is noisy (see
+            # __init__ comment). throttle/brake are applied as-is.
+            applied_steer = self.prev_steer + self.steer_lowpass_alpha * (steer_action - self.prev_steer)
 
-        if self.crashed:
-            reward -= 100.0
-            terminated = True
-            termination_reason = "crash"
-        elif self.off_road:
-            reward -= 75.0
-            terminated = True
-            termination_reason = "off_road"
-        elif self.wrong_way:
-            reward -= 75.0
-            terminated = True
-            termination_reason = "wrong_way"
-        elif self.stall_counter >= 20:  # ~1 second of sustained stalling
-            reward -= 10.0
-            terminated = True
-            termination_reason = "stall"
-        elif self.waypoint_index >= len(self.waypoints):
-            # Reached the end of the route
-            reward += 20.0
-            terminated = True
-            termination_reason = "success"
+            control = carla.VehicleControl(throttle=throttle_action, steer=applied_steer, brake=brake_action)
+            self.vehicle.apply_control(control)
 
-        # 5. Episode truncation (time limit) -- penalize running out the clock
-        # without reaching the destination, otherwise a policy that loops in
-        # place collecting small per-tick rewards forever has no incentive to
-        # actually finish the route.
-        if self.episode_steps >= self.max_episode_steps:
-            truncated = True
-            reward -= 50.0
-            termination_reason = "timeout"
+            # Reset the per-tick lane invasion flag before ticking -- the
+            # sensor callback will set it if a marking is crossed this tick.
+            self.lane_invaded_this_step = False
 
-        return obs, reward, terminated, truncated, {"termination_reason": termination_reason}
+            # Synchronous tick
+            self.world.tick()
+            self.episode_steps += 1
+
+            # Off-road check: project_to_road=False returns None when the
+            # vehicle's location isn't inside any drivable lane (e.g. drove
+            # off the road entirely, onto grass/sidewalk with no lane
+            # marking to trigger the lane invasion sensor).
+            current_waypoint = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=False)
+            self.off_road = current_waypoint is None
+
+            # Track the action that produced this new state, so it shows up
+            # as "previous action" in the observation computed below, and so
+            # the low-pass filter above blends from the actually-applied
+            # value next tick.
+            self.prev_steer = applied_steer
+            self.prev_throttle = throttle_action
+
+            # 2. Extract new observation vectors
+            obs = self._get_observation()
+
+            # Wrong-way check: compare the vehicle's heading to its *current*
+            # lane's own local direction (obs[5], from _get_observation()) --
+            # more than 90 degrees off means driving against that lane's
+            # traffic flow. Skipped entirely inside junctions: a junction's
+            # connector lanes curve rapidly and the projected lane's heading
+            # swings through the turn, so a normal, correct turn can
+            # transiently look >90 degrees off even though nothing is wrong.
+            # off_road detection and the lane-invasion sensor still catch bad
+            # driving once the vehicle exits back onto a normal road segment.
+            current_lane_wp = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=True)
+            in_junction = current_lane_wp.is_junction if current_lane_wp else False
+            self.wrong_way = (not self.off_road) and (not in_junction) and abs(obs[5]) > (np.pi / 2)
+            if self.wrong_way:
+                vehicle_yaw = self.vehicle.get_transform().rotation.yaw
+                print(f"! wrong_way triggered: road_id={current_lane_wp.road_id if current_lane_wp else 'N/A'}, "
+                      f"lane_id={current_lane_wp.lane_id if current_lane_wp else 'N/A'}, "
+                      f"is_junction={in_junction}, "
+                      f"lane_yaw={current_lane_wp.transform.rotation.yaw if current_lane_wp else float('nan'):.1f}, "
+                      f"vehicle_yaw={vehicle_yaw:.1f}, "
+                      f"heading_error_deg={math.degrees(obs[5]):.1f}")
+
+            # 3. Reward function: incentivize progress toward the goal, penalize crashes.
+            # Round 12: rebalanced back toward a net-positive per-tick reward
+            # for competent driving -- rounds 9-11 stacked enough per-tick
+            # penalties (lane offset, heading error, steering smoothness,
+            # obstacle) that a good drive's total went negative, at which
+            # point discounted RL's optimal policy is to end the episode as
+            # fast/cheaply as possible (see PROGRESS.md round 12 diagnosis).
+            # No flat per-tick speed reward (there used to be one: `speed *
+            # 0.1`) -- that let a policy earn thousands of reward just by
+            # driving fast and surviving long, dwarfing terminal penalties
+            # (round 8's reward-hacking bug). Progress-toward-goal shaping
+            # below is the only per-tick driver of reward; it telescopes to a
+            # total bounded by net distance closed, so it can't be inflated
+            # by just running out the clock.
+            velocity = self.vehicle.get_velocity()
+            speed = 3.6 * np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)  # km/h
+
+            reward = -0.01  # Small per-step penalty to encourage efficiency
+
+            # Penalty for idling (not moving AND not accelerating)
+            if speed < 1.0 and throttle_action < 0.1:
+                reward -= 0.3  # Mild penalty for laziness
+
+            # Potential-based shaping on distance-to-goal: telescopes to a
+            # total bounded by net distance closed over the episode.
+            # Coefficient raised 0.5 -> 1.0 (round 12) so a full route's
+            # worth of progress is a clearly positive, dominant total rather
+            # than being swamped by the per-tick penalties below.
+            distance_to_goal = obs[3]
+            reward += 1.0 * (self.prev_distance_to_goal - distance_to_goal)
+            self.prev_distance_to_goal = float(distance_to_goal)
+
+            # Advance waypoint if we're close enough (only if actually moving).
+            # Milestone bonus, not the main reward driver.
+            if len(self.waypoints) > self.waypoint_index:
+                distance_to_waypoint = obs[1]
+                if distance_to_waypoint < 2.0 and speed > 2.0:  # Within 2m AND moving at least 2 km/h
+                    self.waypoint_index += 1
+                    reward += 2.0
+
+            # Reward for heading toward waypoint (only if moving).
+            if speed > 1.0:  # Only reward steering when actually moving
+                angle_error = abs(obs[2])
+                reward += max(0, 0.5 - angle_error / np.pi) * 0.1
+
+            # Continuous penalty for drifting off lane center / misaligning
+            # with road heading. Coefficient brought back down 0.25 -> 0.15
+            # (round 12) -- round 11's 0.25 was calibrated in isolation and,
+            # stacked with every other penalty below, was part of why total
+            # reward went negative for normal driving.
+            lane_offset = obs[4]
+            heading_error = obs[5]
+            reward -= 0.15 * abs(lane_offset)
+            reward -= 0.1 * abs(heading_error)
+
+            # Penalize crossing a solid lane marking (wrong-lane / off-road
+            # edge). Round 12: dropped plain `Broken` (dashed) back out of
+            # the trigger set (see _on_lane_invasion) -- dashed lines are
+            # what separate most same-direction lanes, and crossing one is
+            # *mandatory* when making a legal turn through most junctions,
+            # so penalizing it was directly punishing turning.
+            if self.lane_invaded_this_step:
+                reward -= 2.0
+
+            # Round 12: the tick-to-tick steering-smoothness penalty (rounds
+            # 9-11) is removed. It was computed on the *sampled* action, so
+            # it penalized the policy's own Gaussian exploration noise, not
+            # just genuine erratic driving -- fighting ent_coef for control
+            # of the action distribution's variance (see PROGRESS.md round
+            # 12 diagnosis). Jitter is now addressed structurally instead,
+            # via action_repeat + the steer low-pass filter above.
+
+            # Obstacle-awareness shaping: obs[8] is the distance to the
+            # nearest detected obstacle ahead, sentinel-capped at
+            # self.obstacle_lookahead when nothing is in range. Penalize
+            # closing fast on a near obstacle, reward braking proportionally
+            # -- but only while actually moving (speed > 2 km/h), so this
+            # can't be farmed by parking near a static prop and holding the
+            # brake forever (a round 9-11 exploit structurally identical to
+            # the old flat speed-reward hack).
+            obstacle_distance = obs[8]
+            if obstacle_distance < self.obstacle_lookahead and speed > 2.0:
+                danger = (self.obstacle_lookahead - obstacle_distance) / self.obstacle_lookahead  # 0..1
+                reward -= danger * speed * 0.02
+                reward += danger * brake_action * 0.3
+
+            # 4. Check terminal criteria
+            # Track sustained near-zero speed regardless of throttle level.
+            # Nothing legitimate about this route requires the car to stop
+            # (no traffic lights/stop signs), so sustained near-zero speed
+            # means stuck, whatever the throttle is doing.
+            if speed < 0.1:
+                self.stall_counter += 1
+            else:
+                self.stall_counter = 0
+
+            # Round 12: terminal penalties cut way down (150 -> 30, uniform
+            # across bad outcomes; timeout 75 -> 20). With per-tick reward
+            # now net-positive for decent driving, ending the episode early
+            # already forfeits all the future positive reward that would
+            # otherwise accrue (discounted opportunity cost) -- that's
+            # already a strong, sufficient disincentive against dying, so a
+            # large terminal penalty stacked on top isn't needed and, worse,
+            # previously *inverted* the incentive once per-tick reward was
+            # negative (see PROGRESS.md round 12 diagnosis: rounds 9-11's
+            # best-ever discovered outcome was stalling immediately).
+            if self.crashed:
+                reward -= 30.0
+                terminated = True
+                termination_reason = "crash"
+            elif self.off_road:
+                reward -= 30.0
+                terminated = True
+                termination_reason = "off_road"
+            elif self.wrong_way:
+                reward -= 30.0
+                terminated = True
+                termination_reason = "wrong_way"
+            elif self.stall_counter >= 20:  # ~1 second of sustained stalling
+                reward -= 30.0
+                terminated = True
+                termination_reason = "stall"
+            elif self.waypoint_index >= len(self.waypoints):
+                # Reached the end of the route.
+                reward += 500.0
+                terminated = True
+                termination_reason = "success"
+
+            # 5. Episode truncation (time limit)
+            if self.episode_steps >= self.max_episode_steps:
+                truncated = True
+                reward -= 20.0
+                termination_reason = "timeout"
+
+            total_reward += reward
+
+            if terminated or truncated:
+                break
+
+        return obs, total_reward, terminated, truncated, {"termination_reason": termination_reason}
 
     def _generate_route(self, start_location, min_manhattan_distance=100.0, max_manhattan_distance=200.0, fixed_goal=None):
         """Pick a goal within [min, max] Manhattan distance and resolve a real route to it.
@@ -437,14 +533,53 @@ class CarlaGymEnv(gym.Env):
             heading_diff = ((heading_diff + 180) % 360) - 180  # Normalize to [-180, 180]
             heading_error = heading_diff * np.pi / 180
 
+        obstacle_distance = self._distance_to_obstacle_ahead(vehicle_loc, vehicle_yaw)
+
         return np.array([speed, distance_to_waypoint, angle_to_waypoint, distance_to_goal,
-                          lane_offset, heading_error, self.prev_steer, self.prev_throttle],
+                          lane_offset, heading_error, self.prev_steer, self.prev_throttle,
+                          obstacle_distance],
                          dtype=np.float32)
+
+    def _distance_to_obstacle_ahead(self, vehicle_loc, vehicle_yaw_deg, half_angle_deg=25.0):
+        """Distance to the nearest obstacle roughly in front of the vehicle,
+        within self.obstacle_lookahead meters -- checks both static level
+        geometry (e.g. parked-car props baked into the map, which never show
+        up in world.get_actors()) and any dynamic vehicle actors (e.g. NPC
+        traffic, if ever added). Returns self.obstacle_lookahead (the "clear"
+        sentinel) if nothing is in range."""
+        max_distance = self.obstacle_lookahead
+        yaw_rad = math.radians(vehicle_yaw_deg)
+        forward_x, forward_y = math.cos(yaw_rad), math.sin(yaw_rad)
+
+        nearest = max_distance
+
+        def consider(obstacle_loc):
+            nonlocal nearest
+            dx = obstacle_loc.x - vehicle_loc.x
+            dy = obstacle_loc.y - vehicle_loc.y
+            dist = math.sqrt(dx**2 + dy**2)
+            if dist < 1e-3 or dist >= nearest:
+                return
+            angle = math.degrees(math.acos(np.clip((dx * forward_x + dy * forward_y) / dist, -1.0, 1.0)))
+            if angle <= half_angle_deg:
+                nearest = dist
+
+        for bbox in self.static_vehicle_bboxes:
+            consider(bbox.location)
+
+        for actor in self.world.get_actors().filter("vehicle.*"):
+            if self.vehicle is not None and actor.id == self.vehicle.id:
+                continue
+            consider(actor.get_location())
+
+        return nearest
 
     def _on_collision(self, event):
         self.crashed = True
 
     def _on_lane_invasion(self, event):
+        # Round 12: dropped plain `Broken` (dashed) back out -- see the
+        # reward-function comment in step() for why.
         for marking in event.crossed_lane_markings:
             if marking.type in (carla.LaneMarkingType.Solid, carla.LaneMarkingType.SolidSolid,
                                  carla.LaneMarkingType.SolidBroken, carla.LaneMarkingType.BrokenSolid):

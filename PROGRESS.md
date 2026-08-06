@@ -165,6 +165,263 @@ the default `~/git/carla` (used to locate `agents.navigation.global_route_planne
     onto a normal road segment. Also an environment/eval fix, not a policy
     change.
 
+- **Round 8 (complete)**: continued training from round 7's checkpoint
+  (`train.py --total-timesteps 150000`, no `--fresh` -- obs space and
+  `VecNormalize` stats are unchanged, only the environment's wrong_way logic
+  changed). Rationale: round 7's checkpoint was trained entirely under the
+  old buggy wrong_way logic, which likely punished correct intersection turns
+  repeatedly during training (not just eval) -- resuming lets the policy
+  correct that learned avoidance habit under the fixed reward signal while
+  keeping the lane-keeping/curve-following behavior it already learned,
+  rather than re-learning everything from scratch. Log: `train_round8.log`.
+  Early signs were good (first 4 episodes after resuming showed off_road/crash
+  terminations only, no wrong_way at all, including one episode reaching
+  1465/1500 steps before a crash), but the full run surfaced **reward
+  hacking**: `episode_log.txt` shows crash/wrong_way episodes netting
+  +4000-4700 total reward (e.g. `reward=4732.67, reason=crash`), because a
+  flat per-tick `speed * 0.1` reward let the policy earn large reward just by
+  driving fast and surviving long, dwarfing the -75/-100 terminal penalties.
+  Net behavior: car survives indefinitely without crashing but doesn't reach
+  the destination -- optimizing for "stay alive and collect speed reward,"
+  not "finish the route." Also: `eval/value_loss` read ~1e5 vs.
+  `train/value_loss` ~0.1 -- root-caused as a units bug in
+  `PeriodicEvalCallback` (comparing the critic's normalized-scale
+  predictions against a Monte-Carlo return built from raw, un-normalized
+  rewards); fixed by running rewards through `venv.normalize_reward()`
+  before accumulating the eval return.
+
+- **Round 9 (complete)**: fresh run (`--fresh` -- obs/action space changed,
+  so round 8's checkpoint doesn't load), implementing four fixes together:
+  1. **Reward hacking fix**: removed the flat `speed * 0.1` per-tick reward
+     entirely; replaced with potential-based distance-to-goal shaping
+     (already present) as the only per-tick progress driver, so total reward
+     is bounded by net distance closed rather than survival time.
+  2. **Eval/train value_loss units fix** (above).
+  3. **Steering-smoothness penalty**: `reward -= 0.2 * abs(steer_action -
+     previous_steer)`, to address jittery left-right steering on otherwise
+     straight roads.
+  4. **Obstacle detection + braking**: added a `brake` action (3rd action
+     dim), a 9th observation dim for distance to the nearest obstacle ahead
+     (`_distance_to_obstacle_ahead()` -- checks both static level geometry
+     via `get_level_bbs()`, since parked-car props baked into the map never
+     show up in `world.get_actors()`, and any dynamic vehicle actors), and
+     reward shaping that penalizes closing fast on a near obstacle while
+     rewarding proportional braking.
+  Terminal magnitudes also bumped up (crash -150, off_road/wrong_way -100,
+  stall -20, timeout -75, success +20→+250) so the terminal outcome stays a
+  dominant signal now that per-tick reward is small and bounded. Log:
+  `train_round9.log`. Ran the full 150k timesteps, but surfaced a new failure
+  mode: the policy **collapsed to standing still** (or barely creeping,
+  steering back and forth in place) rather than driving --
+  `episode_log.txt`'s back half is dominated by `reason=stall` and
+  suspiciously small-magnitude `timeout` rewards (e.g. `-15.47`, `-7.47`).
+  Root-caused to two things: (a) `ent_coef=0.0` (no exploration pressure) let
+  the policy prematurely converge onto this degenerate low-risk mode once
+  found, with nothing pushing it back out; (b) the stall check
+  (`speed < 0.1 and throttle > 0.5`) was gameable -- a policy applying
+  throttle in the 0.1-0.5 band while essentially stationary never tripped it
+  at all, riding out the full 1500-step timeout instead, and even when stall
+  *did* fire, its -20 penalty was far cheaper than risking the -100/-150
+  terminal penalties of actually attempting to drive.
+
+- **Round 10 (complete)**: resumed from round 9's checkpoint (no
+  `--fresh` -- obs/action space unchanged from round 9), 150k timesteps,
+  `--ent-coef 0.01`, targeting the round 9 stall-collapse directly:
+  1. **Entropy bonus**: `--ent-coef 0.01` (was 0.0, the SB3 default) to keep
+     exploration pressure alive and prevent premature convergence onto a
+     degenerate low-risk policy.
+  2. **Stall-check loophole closed**: dropped the `throttle > 0.5` condition
+     -- now sustained `speed < 0.1` alone counts as stalled, regardless of
+     throttle level, so there's no throttle value that lets the car sit
+     still indefinitely undetected.
+  3. **Unified bad-outcome penalties**: crash/off_road/wrong_way/stall all
+     now -150 (was -150/-100/-100/-20); timeout stays -75; success bumped
+     20/250 → +500. Previously stall (-20) was cheap relative to the other
+     terminals, making "stand still and eat the small stall penalty" look
+     safer than actually attempting to drive; equalizing removes that
+     asymmetry.
+  Chose to resume rather than restart from scratch since obs/action space is
+  unchanged from round 9 and the checkpoint still has whatever
+  lane-following ability it learned before collapsing -- restarting cold
+  would repeat the same risky early-exploration phase that plausibly caused
+  the collapse in the first place. Smoke-tested first (`--fresh`, 96
+  timesteps): stall now triggers in 29 steps at -150 as expected, no errors.
+  Log: `train_round10.log`. First ~11 episodes after resuming are still all
+  `stall` at ~-150 (expected -- it resumed the already-collapsed policy;
+  entropy needs some steps to nudge it back toward exploring driving
+  behavior again). Not yet evaluated for whether the collapse resolves.
+  Open question flagged but *not yet acted on*: the per-tick progress reward
+  (waypoint milestone bonus + potential-based shaping) is bounded by route
+  length (~60-150 waypoints per route at 2m spacing), so a policy that
+  drives ~75% of a route and then crashes could still net a positive total
+  reward under the current terminal penalties -- worth revisiting once
+  round 10's stall-collapse fix is evaluated, but deferred for now to avoid
+  changing two things at once.
+  Ran the full 150k timesteps, ending at `total_timesteps=302745` (slight
+  rollout-boundary overshoot past the 300,329 target). `Model saved
+  successfully!`, no errors. Stall-collapse from round 9 did *not* recur as
+  a pure end-state -- termination reasons in the back half of
+  `episode_log.txt` are a mix of `timeout`/`stall`/`off_road`/`wrong_way`/
+  `crash` rather than round 9's wall of pure `stall`, consistent with the
+  entropy bonus keeping exploration alive. However, live driving via
+  `drive.py` showed the car moving faster than round 9 but slower and more
+  jittery than round 8 (still weaving/oscillating), and never reliably
+  reaching the destination -- round 8 remains the best-driving (if
+  destination-missing) checkpoint so far.
+
+- **Round 11 (in progress)**: resumed from round 10's checkpoint (no
+  `--fresh`), 150k timesteps, `--ent-coef 0.01`, targeting the persistent
+  jittery/weaving "drunk walk" driving behavior:
+  1. **Lane-invasion sensor gap closed**: `_on_lane_invasion()` only flagged
+     crossings of `Solid`/`SolidSolid`/`SolidBroken`/`BrokenSolid` markings,
+     excluding plain `Broken` (dashed) markings -- the type that separates
+     most same-direction lanes. A car weaving back and forth across a dashed
+     line while staying roughly on the road never triggered the `-2.0`
+     lane-invasion penalty at all. Added `Broken` to the trigger set.
+  2. **Lane-offset penalty strengthened**: `reward -= 0.05 * abs(lane_offset)`
+     -> `0.25 * abs(lane_offset)`. At the old coefficient, even the clipped
+     max offset (5m) only cost -0.25/tick, and realistic in-lane weaving cost
+     next to nothing -- far too weak next to the ~0.1/tick heading bonus,
+     progress shaping, and +2.0 per waypoint, so a jittery-but-progressing
+     policy still netted positive reward.
+  3. **Steering-smoothness penalty strengthened**: `reward -= 0.2 * abs(steer
+     _action - previous_steer)` -> `0.4 * ...` -- round 9's introduction of
+     this term at 0.2 was evidently insufficient to stop oscillation, per
+     round 10's driving behavior.
+  Smoke-tested first (`--fresh`, 96 timesteps): ran cleanly, no errors, stall
+  triggered as expected. Backed up round 10's checkpoint
+  (`ppo_carla_model_round10_backup.zip` /
+  `ppo_carla_model_round10_backup_vecnormalize.pkl`) before resuming.
+
+  **Switched from resume to `--fresh` partway through round 11.** Initially
+  launched resumed from round 10's checkpoint, but killed it after ~69k
+  steps (7 min in) once we realized resuming confounds attribution: round
+  10's weaving behavior is already strongly reinforced into the policy
+  weights, and PPO's clipped updates limit how fast a policy can shift per
+  update, so a resumed run that still looks bad after 150k steps wouldn't
+  tell us whether the round 11 reward fixes work or whether the old habit
+  just hadn't been unlearned yet. A fresh run against the full current
+  reward function gives a clean answer to "does this reward combination
+  produce good driving from scratch." Also discovered per-step throughput is
+  much higher than assumed (~500+ steps/sec, not CPU-tick-bound as earlier
+  believed) now that rendering is disabled (`1980740 Disable CARLA rendering
+  during training`), so a fresh 150k-step run is cheap (~5 min of raw
+  stepping time) rather than the multi-hour cost assumed in earlier rounds.
+  Relaunched with `--fresh --total-timesteps 150000 --ent-coef 0.01`. Log:
+  `train_round11.log`.
+
+  **Round 11 complete.** Ran the full 150k timesteps (230 episodes, ends at
+  `total_timesteps=150547`), saved cleanly, no errors. Termination-reason
+  breakdown over the whole run: `stall` 141, `timeout` 62, `off_road` 15,
+  `wrong_way` 10, `crash` 2, `success` 0. Last 40 episodes shifted toward
+  `timeout` (26) over `stall` (13) -- i.e. it moved from freezing in place
+  toward surviving the full 1500 steps without crashing, similar to round
+  8's failure mode (drives around, never reaches the destination).
+
+  **Live evaluation (user, via driving the checkpoint): still bad.** Not
+  moving / moving very slowly -- slower than round 10. Still visibly
+  jittery/oscillating. User's assessment: every round since round 8 has made
+  driving quality *worse*, not better, despite round 8 itself never reaching
+  the destination. Round 8 remains the best-driving checkpoint of all 11
+  rounds to date.
+
+  This is a strong signal that the round-by-round manual reward-coefficient
+  tuning approach (bump this penalty, add that bonus, re-run 150k steps,
+  eyeball it) has stalled out or is actively moving in the wrong direction,
+  and needs a more systematic rethink rather than another single hand-picked
+  tweak -- see below for the next step taken.
+
+- **Round 12 planning**: given round 11's regression, spawned a
+  deep-reasoning research agent (Opus) to review the full round 4-11 history
+  in this file plus the current `carla_gym_env.py`/`train.py` reward and
+  termination logic, and propose next steps -- including whether an
+  AutoML-style automated search over reward coefficients/hyperparameters
+  (vs. continued hand-tuning) is viable here.
+
+  **Key finding**: pulled the actual reward distribution per round --
+  round 8 median +1168 (max +5204, 7 successes); round 9 median -217 (max
+  -7.5, 0 successes); round 10 median -161 (max -14.2, 0 successes); round 11
+  median -243 (**max -148.5**, 0 successes). Since round 9, *no episode out
+  of 554 has earned positive total reward* -- the reward function became a
+  pure cost function. Under discounted RL with an everywhere-negative
+  reward, the optimal policy is to end the episode as cheaply/fast as
+  possible; round 11's single best-ever outcome across 230 episodes was
+  `reason=stall` at -148.5, i.e. **freezing immediately was the argmax**.
+  Root causes identified (see `tutorial.md` §1.3/1.6/1.7 for the mechanics):
+  1. The round 9-11 steering-smoothness penalty was computed on the
+     *sampled* action, so it punished the policy's own Gaussian exploration
+     noise (~-0.45/tick at init) far more strongly (~30x) than `ent_coef`
+     could counteract, causing the policy to collapse its own action
+     variance (stop moving) to escape the penalty.
+  2. `gamma=0.99` gives only a ~100-step effective horizon (5 sec at 20Hz);
+     the +500 success bonus, ~1000+ steps away, was discounted to ~0.02 --
+     mathematically invisible to the agent.
+  3. Round 9's obstacle-braking term (`danger * brake_action * 0.5`,
+     unconditional on speed) was a second exploitable reward for not moving,
+     structurally identical to round 8's original speed-reward hack.
+  4. Round 11's `Broken`-marking lane-invasion penalty fired on every legal
+     junction turn (dashed lines are mandatory to cross when turning),
+     directly punishing the behavior most needed.
+  5. Methodology: every round bundled 2-4 changes with n=1 run and no fixed
+     reward-independent scoring metric, so no round's "did it help?" was
+     ever actually measurable above run-to-run noise -- only eyeballing was.
+  Full reasoning, code pointers, and the proposed AutoML (Optuna two-stage
+  search) design are preserved in the agent's report; conceptual mechanics
+  behind the diagnosis are now written up in `tutorial.md`.
+
+- **Round 12 (in progress)**: implemented the agent's "R1 baseline + R2
+  horizon fix + R3 structural jitter fix" recommendations together, fresh
+  run (obs/action semantics changed enough -- action-repeat -- that
+  resuming doesn't make sense):
+  1. **Reward rebalanced back to net-positive for competent driving**:
+     progress-shaping coefficient 0.5 -> 1.0; lane-offset penalty 0.25 ->
+     0.15; terminal penalties (crash/off_road/wrong_way/stall) 150 -> 30,
+     uniform; timeout 75 -> 20; success bonus stays +500. Rationale: with
+     per-tick reward net-positive again, ending an episode early already
+     forfeits future positive reward (discounted opportunity cost) -- a
+     sufficient disincentive against dying on its own, so large terminal
+     penalties stacked on top aren't needed and were actively harmful when
+     per-tick reward was negative (see finding above).
+  2. **Steering-smoothness reward term deleted entirely** (was fighting
+     `ent_coef` for control of the policy's action variance -- see finding
+     above). Replaced with two structural fixes instead:
+     - **Action-repeat**: each RL decision is now held for 4 physical CARLA
+       ticks (20Hz -> 5Hz effective decision rate) instead of 1 -- caps how
+       often direction can change, and stretches the effective planning
+       horizon 4x for free (see #3 below).
+     - **Steer low-pass filter**: the *applied* steer blends 70% previous /
+       30% new sample each physical tick within a repeat window, so the
+       actual control signal changes smoothly even when the sampled action
+       is noisy.
+  3. **Gamma raised 0.99 -> 0.995** (`train.py` default), combined with
+     action-repeat's 4x stretch, to make the +500 success bonus and route
+     completion actually visible within the discounted objective -- chose a
+     moderate increase + action-repeat over jumping straight to an extreme
+     gamma (e.g. 0.9999), which would add value-function variance the
+     ~150k-step budget likely can't afford (see `tutorial.md` §1.7).
+  4. **Round 11's `Broken` lane-marking trigger reverted** back to
+     solid-markings-only (was penalizing every legal junction turn).
+  5. **Obstacle-braking reward term gated on `speed > 2.0`** so it can't be
+     farmed by parking near a static prop and holding the brake indefinitely
+     (was unconditional, a second exploitable "reward for not moving").
+  6. **Fixed an unrelated bug found along the way**: resumed runs'
+     `model.learning_rate = args.learning_rate` was a no-op (SB3 reads the
+     LR from `self.lr_schedule`, not the bare attribute) -- every past
+     "resumed" round silently kept its original LR schedule regardless of
+     `--learning-rate`. Now uses `get_schedule_fn`.
+  Not yet done (deferred, larger scope): the driving-completion sanity
+  metric / expert-vs-do-nothing sanity gate (R0), CARLA server
+  parallelization for multi-env training (R5), and the two-stage Optuna
+  search itself -- all recommended as next steps *after* this baseline is
+  confirmed to actually drive.
+  CARLA's docker container had exited (code 137) between round 11 and this
+  session -- restarted before smoke-testing. Smoke-tested (`--fresh`, 128
+  timesteps, tiny n_steps/batch): ran cleanly, no errors, stall now costs
+  ~-30 to -50 (30 terminal + small accumulated per-tick costs) as expected.
+  Backed up round 11's checkpoint (`ppo_carla_model_round11_backup.zip` /
+  `_vecnormalize.pkl`). Launched `--fresh --total-timesteps 150000
+  --ent-coef 0.01`. Log: `train_round12.log`. Not yet evaluated.
+
 ## Known issues identified (as of round 4)
 
 1. **Reward imbalance at longer routes**: flat +10 waypoint bonus means a
