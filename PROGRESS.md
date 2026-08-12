@@ -422,6 +422,55 @@ the default `~/git/carla` (used to locate `agents.navigation.global_route_planne
   `_vecnormalize.pkl`). Launched `--fresh --total-timesteps 150000
   --ent-coef 0.01`. Log: `train_round12.log`. Not yet evaluated.
 
+- **Round 13 (complete)**: no source changes at all -- `git diff` against HEAD
+  is empty, and the only untracked files are tooling (a `start_tensorboard.sh`
+  launcher, an opencode hooks config, and the `AGENTS.md` -> `CLAUDE.md`
+  symlink). The round is purely a continuation: loaded round 12's checkpoint
+  (`fresh=False`, no code or hyperparameter change) and ran another ~150k
+  timesteps -- the log's first episode starts at `total_timesteps=151525`
+  (round 12 ended at 151,525) and the run ends at `total_timesteps=302983`,
+  with the same hyperparameters as round 12 (gamma 0.995, ent_coef 0.01,
+  n_steps 2048, lr 3e-4). Log: `train_round13.log`.
+
+  **This is the first round that reliably reaches the destination.** 1,557
+  episodes; termination-reason breakdown: `crash` 538, `off_road` 416,
+  `wrong_way` 298, `stall` 90, `timeout` 8, **`success` 307 (19.7%)** in
+  rollout episodes vs. 43 successes total in round 12's 5,296 episodes. Mean
+  episode reward +234.8
+  (max +1298.96 on a 368-step success; successes average +848.8 over 147
+  steps). Successes climbed steadily through the round -- 35 / 49 / 96 / 127
+  per quartile, and 68 (34%) in the last 200 episodes -- whereas round 12's
+  final ~116 episodes had only 5. The in-training periodic deterministic eval
+  tracked the same trend (40/140 successes overall, 39/119 = 32.8% in the
+  back half). **Standalone `eval.py` on the final checkpoint: 6/10 successes**
+  (user-reported, deterministic).
+
+  **Interpretation**: the only thing that changed between rounds 12 and 13 was
+  ~150k more timesteps of the identical recipe -- this is the strongest
+  evidence yet that round 12's redesign (net-positive per-tick reward,
+  action-repeat + steer low-pass, gamma 0.995, smoothness-penalty deletion,
+  `Broken`-marking revert, speed-gated obstacle braking) fixed the structural
+  problems that kept rounds 9-11 regressing, rather than the improvement being
+  another luck-of-the-n=1-tuning artifact. The car went from "best-driving but
+  never-completes" (round 8) to actually finishing routes once the recipe got
+  enough steps. The success rate was still rising when the run ended (no
+  plateau), so the checkpoint likely isn't saturated yet.
+
+  **Caveats / open questions** (don't over-read the 6/10): (a) n=1 run, and
+  6/10 on 10 fresh attempts is a noisy estimate of true completion rate
+  (~±15%); (b) attempts get a random route, so coverage over the harder
+  junction-heavy route variants is unknown; (c) training data shows the failure
+  modes are far from solved -- 538 crashes, 416 off-road, 298 wrong-way over
+  the round, and the periodic eval still occasionally hits `stall` (~-30), so
+  the degenerate no-move mode is reachable but no longer dominant; (d)
+  `ppo_carla_model.zip` / `_vecnormalize.pkl` now hold the round-13 model;
+  round 12's exact checkpoint is preserved as
+  `ppo_carla_model_round12_backup.zip` / `_vecnormalize.pkl` (backed up at
+  round 13 launch). The previously deferred items from round 12's plan (R0
+  expert/do-nothing sanity baseline, parallelized multi-env training, Optuna
+  search) are the natural next steps now that there's a baseline that actually
+  completes routes.
+
 ## Known issues identified (as of round 4)
 
 1. **Reward imbalance at longer routes**: flat +10 waypoint bonus means a
