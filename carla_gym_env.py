@@ -254,7 +254,21 @@ class CarlaGymEnv(gym.Env):
             # off the road entirely, onto grass/sidewalk with no lane
             # marking to trigger the lane invasion sensor).
             current_waypoint = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=False)
-            self.off_road = current_waypoint is None
+            # Junctions are carved out of the off-road test (mirrors the
+            # wrong_way check below): inside a junction the "drivable" area
+            # is defined by connector-lane polygons that don't tile the whole
+            # paved junction surface, so a normal, legal turn can momentarily
+            # put the vehicle on junction asphalt that no connector polygon
+            # covers -- get_waypoint(project_to_road=False) returns None
+            # there even though nothing is wrong. This was terminating valid
+            # episodes mid-turn. Only call it off_road when the *projected*
+            # lane waypoint is a normal road segment. Tradeoff: a genuinely
+            # off-road excursion that stays within a junction's bounds won't
+            # terminate until the vehicle exits onto a regular road segment
+            # (lane-invasion sensor still catches marking crossings meanwhile).
+            current_lane_wp = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=True)
+            in_junction = current_lane_wp.is_junction if current_lane_wp else False
+            self.off_road = (current_waypoint is None) and (not in_junction)
 
             # Track the action that produced this new state, so it shows up
             # as "previous action" in the observation computed below, and so
@@ -275,8 +289,8 @@ class CarlaGymEnv(gym.Env):
             # transiently look >90 degrees off even though nothing is wrong.
             # off_road detection and the lane-invasion sensor still catch bad
             # driving once the vehicle exits back onto a normal road segment.
-            current_lane_wp = self.map.get_waypoint(self.vehicle.get_location(), project_to_road=True)
-            in_junction = current_lane_wp.is_junction if current_lane_wp else False
+            # (current_lane_wp / in_junction are computed in the off-road
+            # check above and reused here -- one get_waypoint call per tick.)
             self.wrong_way = (not self.off_road) and (not in_junction) and abs(obs[5]) > (np.pi / 2)
             if self.wrong_way:
                 vehicle_yaw = self.vehicle.get_transform().rotation.yaw
@@ -398,6 +412,28 @@ class CarlaGymEnv(gym.Env):
                 terminated = True
                 termination_reason = "crash"
             elif self.off_road:
+                # Diagnostic logging: off_road now only fires when the
+                # vehicle's center is outside every drivable lane polygon on
+                # a *non-junction* segment, so this should mostly be genuine
+                # grass/sidewalk exits -- if dist_to_lane is small or road_id
+                # looks junction-adjacent, the detection boundary is still
+                # wrong somewhere.
+                vehicle_loc = self.vehicle.get_location()
+                if current_lane_wp is not None:
+                    projected_loc = current_lane_wp.transform.location
+                    dist_to_lane = math.sqrt((vehicle_loc.x - projected_loc.x)**2 +
+                                             (vehicle_loc.y - projected_loc.y)**2)
+                    road_id = current_lane_wp.road_id
+                    lane_id = current_lane_wp.lane_id
+                else:
+                    dist_to_lane = float("nan")
+                    road_id = lane_id = "N/A"
+                print(f"! off_road triggered: vehicle at ({vehicle_loc.x:.1f}, {vehicle_loc.y:.1f}, "
+                      f"{vehicle_loc.z:.1f}), not on any drivable lane (project_to_road=False -> None), "
+                      f"nearest drivable lane: road_id={road_id}, lane_id={lane_id}, "
+                      f"is_junction={in_junction}, dist_to_lane={dist_to_lane:.1f}m, "
+                      f"lateral_offset={obs[4]:.2f}m, heading_error_deg={math.degrees(obs[5]):.1f}, "
+                      f"speed={speed:.1f}km/h, episode_steps={self.episode_steps}")
                 reward -= 30.0
                 terminated = True
                 termination_reason = "off_road"

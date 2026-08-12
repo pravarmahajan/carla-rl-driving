@@ -43,7 +43,7 @@ class PeriodicEvalCallback(BaseCallback):
     a training episode mid-flight -- collect_rollouts() only calls
     _on_rollout_end() between complete rollouts, never inside one.
     """
-    def __init__(self, eval_freq_rollouts=5, n_eval_episodes=3):
+    def __init__(self, eval_freq_rollouts=5, n_eval_episodes=10):
         super().__init__()
         self.eval_freq_rollouts = eval_freq_rollouts
         self.n_eval_episodes = n_eval_episodes
@@ -64,13 +64,21 @@ class PeriodicEvalCallback(BaseCallback):
         episode_lengths = []
         successes = 0
         squared_value_errors = []
+        reason_counts = {}
 
-        obs = venv.reset()
         for _ in range(self.n_eval_episodes):
             episode_reward = 0.0
             episode_length = 0
             step_values = []
             step_rewards = []
+            termination_reason = None
+
+            # Must reset before *every* eval episode: the previous episode
+            # left the env in a needs_reset state, and Monitor raises
+            # RuntimeError on step() otherwise. This also draws a fresh
+            # random spawn/route per episode, so eval episodes are i.i.d.
+            # samples of the route distribution rather than continuations.
+            obs = venv.reset()
             while True:
                 obs_tensor, _ = self.model.policy.obs_to_tensor(obs)
                 with torch.no_grad():
@@ -95,11 +103,15 @@ class PeriodicEvalCallback(BaseCallback):
                 episode_reward += reward
                 episode_length += 1
                 if dones[0]:
-                    if infos[0].get("termination_reason") == "success":
+                    termination_reason = infos[0].get("termination_reason", "unknown")
+                    if termination_reason == "success":
                         successes += 1
                     break
             episode_rewards.append(episode_reward)
             episode_lengths.append(episode_length)
+            reason_counts[termination_reason] = reason_counts.get(termination_reason, 0) + 1
+            print(f"Eval ep {self._rollout_count}.{_ + 1}: reward={episode_reward:.2f}, "
+                  f"length={episode_length}, reason={termination_reason}")
 
             # Empirical discounted return realized from each step to the end
             # of this (deterministic, held-out) episode, compared against
@@ -119,6 +131,9 @@ class PeriodicEvalCallback(BaseCallback):
         self.logger.record("eval/mean_reward", float(np.mean(episode_rewards)))
         self.logger.record("eval/mean_length", float(np.mean(episode_lengths)))
         self.logger.record("eval/success_rate", successes / self.n_eval_episodes)
+        self.logger.record("eval/n_success", successes)
+        for reason in sorted(reason_counts):
+            self.logger.record(f"eval/n_{reason}", reason_counts[reason])
         self.logger.record("eval/value_loss", float(np.mean(squared_value_errors)))
         self.logger.dump(self.num_timesteps)
 
@@ -185,6 +200,9 @@ def parse_args():
     parser.add_argument("--clip-range", type=float, default=0.2)
     parser.add_argument("--vf-coef", type=float, default=0.5, help="Value loss weight")
     parser.add_argument("--ent-coef", type=float, default=0.0, help="Entropy bonus weight (SB3 default is 0)")
+    parser.add_argument("--eval-episodes", type=int, default=10,
+                         help="Number of deterministic eval episodes per eval point (was 3 -- "
+                              "too few to resolve a ~3% success rate)")
     parser.add_argument("--model-path", type=str, default="ppo_carla_model",
                          help="Path (without .zip) to load an existing model from and save back to")
     parser.add_argument("--fresh", action="store_true",
@@ -260,7 +278,7 @@ if __name__ == "__main__":
     callback = CallbackList([
         EpisodeLoggerCallback(),
         PeriodicSaveCallback(args.model_path, vecnormalize_path, save_freq=10000),
-        PeriodicEvalCallback(eval_freq_rollouts=5, n_eval_episodes=3),
+        PeriodicEvalCallback(eval_freq_rollouts=5, n_eval_episodes=args.eval_episodes),
     ])
     model.learn(total_timesteps=args.total_timesteps, callback=callback, reset_num_timesteps=False)
 
