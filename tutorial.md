@@ -32,7 +32,8 @@ gets pushed down.**
 
 ### 1.2 The policy's action distribution: where does sigma (σ) come from?
 
-For continuous actions, SB3's policy outputs a Gaussian per action
+For continuous actions in on-policy algorithms such as PPO,
+SB3's policy outputs a Gaussian per action
 dimension: a mean `μ(s)` **and** a standard deviation `σ`. It's easy to
 assume `σ` is just another raw output of the neural network like `μ` is --
 it isn't. `μ(s)` is state-dependent, computed by a real forward pass through
@@ -55,6 +56,13 @@ property of network initialization.
   `H = 0.5 * log(2πe·σ²)` per dimension -- monotonically increasing in `σ`.
   The `-ent_coef * entropy` loss term means gradient descent pushes `σ` *up*
   (more entropy -> lower loss, weighted by `ent_coef`).
+
+A good explanation is in this chat thread: https://share.gemini.google/xMA50ssll3Pa
+The ent_coef is an entropy regularizer. Collapsing of sigma is built into the algorithm.
+If we find actions which are better than earlier, the policy tends to collapse
+around that point. If we allowed the policy gradient to take complete control
+of sigma, then our model could collapse into suboptimal policies. 
+The entropy regularizer thus encourages more exploration.
 
 Whichever pressure is numerically larger wins. In this project, the round
 9-11 steering-smoothness reward term (`-0.4 * |steer_action - previous_steer|`,
@@ -304,3 +312,32 @@ is **additive**: training runs until `self.num_timesteps` reaches
 `(timesteps_at_resume + X)`, not just X more from zero. The stop condition
 is only checked at rollout boundaries (`n_steps` granularity), so the actual
 final `total_timesteps` typically overshoots the target slightly.
+
+
+---
+
+## 9. What Changes When the Agent Sees the Road?
+
+*Status: companion to section 8 — the analysis to write after the camera agent
+exists.*
+
+Some of what I expect to learn, stated as hypotheses to be tested rather than
+conclusions:
+
+- **Convolutional inductive biases — locality, weight sharing, translation
+  invariance — are a good structural fit for driving.** A road is a
+  spatially-structured, translation-repetitive signal; a CNN is built to exploit
+  exactly that, and an MLP on flattened pixels is not.
+- **Pixels recover, at a cost, what the vector gave for free.** Curvature, lane
+  markings, obstacles, and context that my nine numbers never carried all
+  become *learned inferences* — but exact speed (a snapshot is a snapshot) and
+  precise distance (depth must be inferred, not measured) are things the vector
+  had directly. The agent's perception problem changes shape, not size.
+- **New failure surfaces arrive with the new representation.** Lighting,
+  weather, distractors, the semantic gap between "pedestrian" and "parked car"
+  (geometry can't tell you), and eventually the sim-to-real cliff.
+- **Measurement stays the same.** Same deterministic eval, same termination
+  breakdown. No new metrics until the old ones are matched — otherwise the
+  comparison isn't a comparison.
+
+---
