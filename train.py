@@ -199,7 +199,7 @@ def parse_args():
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda")
     parser.add_argument("--clip-range", type=float, default=0.2)
     parser.add_argument("--vf-coef", type=float, default=0.5, help="Value loss weight")
-    parser.add_argument("--ent-coef", type=float, default=0.0, help="Entropy bonus weight (SB3 default is 0)")
+    parser.add_argument("--ent-coef", type=float, default=0.01, help="Entropy bonus weight (SB3 default is 0)")
     parser.add_argument("--eval-episodes", type=int, default=10,
                          help="Number of deterministic eval episodes per eval point (was 3 -- "
                               "too few to resolve a ~3% success rate)")
@@ -207,6 +207,8 @@ def parse_args():
                          help="Path (without .zip) to load an existing model from and save back to")
     parser.add_argument("--fresh", action="store_true",
                          help="Ignore any existing model at --model-path and start from scratch")
+    parser.add_argument("-p", "--port", type=int, default=2000,
+                         help="CARLA server port (default: 2000)")
     return parser.parse_args()
 
 
@@ -229,7 +231,7 @@ if __name__ == "__main__":
     # (which is what we're doing here to get VecNormalize in front of it) --
     # without it, no "episode" info key ever gets set, so EpisodeLoggerCallback
     # and SB3's own rollout/ep_rew_mean stats silently never fire.
-    venv = DummyVecEnv([lambda: Monitor(CarlaGymEnv(no_rendering=True))])
+    venv = DummyVecEnv([lambda: Monitor(CarlaGymEnv(no_rendering=True, port=args.port))])
 
     if resume and os.path.exists(vecnormalize_path):
         print(f"Loading existing observation/reward normalization stats from {vecnormalize_path}...")

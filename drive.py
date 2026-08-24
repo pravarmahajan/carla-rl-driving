@@ -132,8 +132,14 @@ def render_to_pygame(image, display):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Drive with trained model in CARLA")
+    parser.add_argument("-p", "--port", type=int, default=2000,
+                         help="CARLA server port (default: 2000)")
+    args = parser.parse_args()
+
     # Initialize environment
-    env = CarlaGymEnv()
+    env = CarlaGymEnv(port=args.port)
     world = env.world
 
     # Load the trained model

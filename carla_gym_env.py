@@ -20,12 +20,12 @@ from agents.navigation.global_route_planner import GlobalRoutePlanner
 class CarlaGymEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, no_rendering=False):
+    def __init__(self, no_rendering=False, port=2000):
         super(CarlaGymEnv, self).__init__()
         self.no_rendering = no_rendering
 
         # Connect to your Dockerized CARLA Server
-        self.client = carla.Client("127.0.0.1", 2000)
+        self.client = carla.Client("127.0.0.1", port)
         self.client.set_timeout(10.0)
         self.world = self.client.get_world()
         self.blueprint_library = self.world.get_blueprint_library()
