@@ -79,7 +79,7 @@ class CarlaGymEnv(gym.Env):
         # policy's own Gaussian exploration noise and fighting ent_coef; see
         # PROGRESS.md round 12).
         self.action_repeat = 4
-        self.steer_lowpass_alpha = 0.3  # applied = 0.7*prev + 0.3*raw each tick
+        self.steer_lowpass_alpha = 0.1  # applied = 0.7*prev + 0.3*raw each tick
 
         # 1. Define Action Space: Continuous values for [Steering (-1.0 to
         # 1.0), Throttle (0.0 to 1.0), Brake (0.0 to 1.0)]. Brake used to be

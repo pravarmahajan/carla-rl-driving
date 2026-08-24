@@ -471,23 +471,12 @@ the default `~/git/carla` (used to locate `agents.navigation.global_route_planne
   search) are the natural next steps now that there's a baseline that actually
   completes routes.
 
-## Known issues identified (as of round 4)
+- ** Round 14** 
+Simply reproduced Round 12 + 13 results. The car behaves in a similar manner. We know our algorithm works. This was just a fresh training, I didn't try new seeds/new environments.
+- ** Round 15 & 16**
+The jitteriness is bothering me. Increased action_repeat to 8 (round 15) - it made no difference. In round 16, I tried reducing the low pass factor from 0.3 to 0.1 
 
-1. **Reward imbalance at longer routes**: flat +10 waypoint bonus means a
-   150m route can accumulate ~750 in waypoint bonuses alone, which can
-   outweigh even the -100/-75 terminal penalties. A policy that drives 90%
-   of a route then crashes can still net positive reward.
-2. **Single-waypoint observation noise**: `_get_observation()` only looks at
-   the *next* 2m waypoint, so marker-placement jitter on straight roads can
-   look like a steering-relevant angle change when it isn't — contributes to
-   the "unnecessary turning on straights" behavior.
-3. **No previous-action feature**: the agent has no signal about its own
-   recent control history, so it can't detect/dampen its own oscillation
-   (relevant to the left-turn bias / circling behavior observed in one run).
-4. **No exact termination-reason logging**: `episode_log.txt` records
-   reward/length but not *why* an episode ended (crash vs. off-road vs.
-   wrong-way vs. stall vs. timeout vs. success). Currently only inferable
-   heuristically from reward magnitude — not exact.
+
 
 ## Planned next steps (prioritized)
 
@@ -514,6 +503,8 @@ the default `~/git/carla` (used to locate `agents.navigation.global_route_planne
 3. **Architecture/optimizer changes**: currently deprioritized — no evidence
    of a capacity/optimization bottleneck (reward was still climbing steadily
    when round 4 crashed).
+
+4. Try new cities/scenarios.
 
 ## Repo layout notes
 
