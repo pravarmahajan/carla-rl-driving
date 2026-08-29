@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "name": "state-v1-round16b",
+  "status": "candidate_frozen_baseline",
+  "source": {
+    "git_commit": "5a3a17b0892ac07af5e80855a9cbaea204edbea8",
+    "git_branch_at_discovery": "post-1",
+    "carla_gym_env_sha256": "03dfd8770e01fc9661b138c32c8f30db29d8c849e590869ef4545218048d0376",
+    "carla_python_api_git_commit": "294096eb1c38eabf246e4f3a9cdab704e33a7f4c"
+  },
+  "artifacts": {
+    "model": {
+      "path": "ppo_carla_model.zip",
+      "sha256": "fb94adc6005f835fb41699ff7f583142835fd41876778b4c7ba3c5cb81223dd4",
+      "size_bytes": 152915
+    },
+    "vecnormalize": {
+      "path": "ppo_carla_model_vecnormalize.pkl",
+      "sha256": "4274c863c07621fbb2d10fbb210ae6b9bf5df17d2a515b4cae537ff6d07f9b2d",
+      "size_bytes": 1674
+    },
+    "training_log": {
+      "path": "train_round16b_action_low_pass_continue.log"
+    }
+  },
+  "model_metadata": {
+    "num_timesteps": 303104,
+    "observation_shape": [9],
+    "action_shape": [3],
+    "gamma": 0.995,
+    "gae_lambda": 0.95,
+    "ent_coef": 0.01,
+    "n_steps": 2048,
+    "batch_size": 64,
+    "n_epochs": 10
+  },
+  "runtime_metadata_from_model": {
+    "python": "3.10.20",
+    "stable_baselines3": "2.9.0",
+    "torch": "2.12.1+cu130",
+    "numpy": "2.2.6",
+    "gymnasium": "1.3.0",
+    "cloudpickle": "3.1.2",
+    "pygame": "2.6.1",
+    "pygame_ce_also_installed": "2.5.7",
+    "gpu_enabled": true
+  },
+  "validation": {
+    "artifact_checksums_verified_on": "2026-08-29",
+    "checkpoint_code_link_is_inferred": true,
+    "reason": "The artifact timestamp matches round 16b completion and its embedded 9D observation/3D action metadata matches commit 5a3a17b. Historical runs did not record Git SHA, so a fresh fixed-route benchmark is still required before promotion from candidate to validated baseline."
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "name": "baseline-state-v1",
+  "research": {
+    "thinking_reference": "THINKING.md",
+    "question": "Can the established nine-observation PPO baseline reproducibly complete fixed routes?",
+    "hypothesis": "Recorded here for infrastructure validation only; the researcher must write the experiment hypothesis in THINKING.md before a real run."
+  },
+  "simulator": {
+    "carla_version": "0.9.16",
+    "carla_python_api_git_commit": "294096eb1c38eabf246e4f3a9cdab704e33a7f4c",
+    "server": "sim-0",
+    "town": null,
+    "fixed_delta_seconds": 0.05,
+    "no_rendering": true
+  },
+  "environment": {
+    "observation_spec": "state-v1",
+    "observation_features": [
+      "speed_kmh",
+      "distance_to_next_waypoint_m",
+      "route_heading_error_rad",
+      "distance_to_goal_m",
+      "lane_offset_m",
+      "lane_heading_error_rad",
+      "previous_steer",
+      "previous_throttle",
+      "obstacle_distance_m"
+    ],
+    "action_spec": "vehicle-control-v1",
+    "action_features": ["steer", "throttle", "brake"],
+    "reward_spec": "round-12-v1",
+    "termination_spec": "round-12-v1",
+    "action_repeat": 4,
+    "steer_lowpass_alpha": 0.1,
+    "max_physical_ticks": 1500
+  },
+  "algorithm": {
+    "name": "PPO",
+    "policy": "MlpPolicy",
+    "total_timesteps": 300000,
+    "n_steps_per_environment": 2048,
+    "n_epochs": 10,
+    "batch_size": 64,
+    "learning_rate": 0.0003,
+    "gamma": 0.995,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "vf_coef": 0.5,
+    "ent_coef": 0.01,
+    "seed": null
+  },
+  "evaluation": {
+    "suite": "fixed-routes-v1",
+    "policy_deterministic": true,
+    "metrics": [
+      "route_completion_fraction",
+      "success_rate",
+      "infractions_per_km",
+      "termination_reason",
+      "steering_rate",
+      "lateral_acceleration",
+      "jerk"
+    ]
+  }
+}

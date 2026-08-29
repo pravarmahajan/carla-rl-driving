@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compose_file="${repository_dir}/infra/carla-compose.yaml"
+
+usage() {
+  echo "Usage: scripts/carla-cluster {up|down|status|logs} [sim-0|sim-1|sim-2]" >&2
+  exit 2
+}
+
+command_name="${1:-}"
+slot="${2:-}"
+
+case "${command_name}" in
+  up)
+    if [[ -n "${slot}" ]]; then
+      docker compose -f "${compose_file}" up -d "${slot}"
+    else
+      docker compose -f "${compose_file}" up -d
+    fi
+    ;;
+  down)
+    docker compose -f "${compose_file}" down
+    ;;
+  status)
+    docker compose -f "${compose_file}" ps
+    ;;
+  logs)
+    [[ -n "${slot}" ]] || usage
+    docker compose -f "${compose_file}" logs --tail 200 "${slot}"
+    ;;
+  *)
+    usage
+    ;;
+esac
+

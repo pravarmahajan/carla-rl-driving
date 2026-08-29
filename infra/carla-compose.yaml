@@ -1,0 +1,38 @@
+name: carla-rl-driving
+
+x-carla-common: &carla-common
+  image: carlasim/carla:0.9.16
+  privileged: true
+  gpus: all
+  restart: "no"
+  stdin_open: true
+  tty: true
+
+services:
+  sim-0:
+    <<: *carla-common
+    container_name: carla-rl-sim-0
+    command: ["bash", "CarlaUE4.sh", "-vulkan", "-RenderOffScreen", "-carla-world-port=2000"]
+    ports:
+      - "2000-2002:2000-2002"
+    labels:
+      carla-rl-driving.slot: sim-0
+
+  sim-1:
+    <<: *carla-common
+    container_name: carla-rl-sim-1
+    command: ["bash", "CarlaUE4.sh", "-vulkan", "-RenderOffScreen", "-carla-world-port=2010"]
+    ports:
+      - "2010-2012:2010-2012"
+    labels:
+      carla-rl-driving.slot: sim-1
+
+  sim-2:
+    <<: *carla-common
+    container_name: carla-rl-sim-2
+    command: ["bash", "CarlaUE4.sh", "-vulkan", "-RenderOffScreen", "-carla-world-port=2020"]
+    ports:
+      - "2020-2022:2020-2022"
+    labels:
+      carla-rl-driving.slot: sim-2
+

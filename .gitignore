@@ -7,6 +7,11 @@ __pycache__/
 
 # Training artifacts / run logs - regenerated, not source
 logs/
+runs/
 episode_log.txt
 *.log
 *.pid
+
+# Local Python tooling
+.pytest_cache/
+.venv/
