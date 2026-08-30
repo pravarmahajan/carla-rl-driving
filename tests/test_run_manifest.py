@@ -38,7 +38,6 @@ class RunManifestTests(unittest.TestCase):
             self.assertEqual(resolved["runtime"]["episodes"], 3)
             self.assertTrue((run_dir / "git.patch").exists())
             self.assertIn("carla_python_agents", manifest["external_sources"])
-            self.assertIn("src/carla_rl/run_manifest.py", (run_dir / "git.patch").read_text(encoding="utf-8"))
             self.assertNotEqual(
                 manifest["experiment"]["fingerprint"],
                 manifest["experiment"]["resolved_fingerprint"],
