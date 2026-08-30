@@ -4,7 +4,10 @@ This repository trains and evaluates a Stable-Baselines3 PPO driving policy
 against CARLA. The current reproducible baseline uses a nine-value state vector,
 a three-value continuous control action, and CARLA 0.9.16.
 
-Create the recorded Python environment with `conda env create -f environment.yml`.
+Use the existing recorded Python environment with `conda activate carla_env`.
+If it does not exist on a new machine, create it once with
+`conda env create -f environment.yml`. `environment.yml` is a reproducible
+specification, not a command you need to rerun for normal development.
 The environment also imports CARLA navigation agents from `CARLA_ROOT` (default
 `~/git/carla`); run manifests record that checkout's Git revision because it is
 executable source, not merely data.
@@ -26,6 +29,25 @@ The pre-speed-limit baseline is recorded in
 checkpoint has nine observations, three actions, and 303,104 PPO timesteps.
 
 ## CARLA server slots
+
+## Quick start
+
+```bash
+conda activate carla_env
+scripts/carla doctor
+scripts/carla cluster up
+scripts/carla cluster status
+scripts/carla train
+```
+
+Use `scripts/carla evaluate --model-path runs/<run-id>/model` or
+`scripts/carla drive --model-path runs/<run-id>/model` after training. The
+wrapper selects the intended CARLA slot and creates run records automatically.
+
+`scripts/carla cluster up` starts the repository's three named Docker CARLA
+servers (`sim-0`, `sim-1`, `sim-2`). `cluster down` stops and removes only
+those project containers and their network; it does not stop arbitrary Docker
+containers.
 
 The repository defines three independent servers:
 

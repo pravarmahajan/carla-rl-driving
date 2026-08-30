@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Convenience entry point for this repository's CARLA workflows.
+set -euo pipefail
+
+repository_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+config_path="${CARLA_RL_CONFIG:-${repository_dir}/configs/experiments/baseline_state_v1.json}"
+catalog_path="${CARLA_SERVER_CATALOG:-${repository_dir}/configs/servers.json}"
+runs_root="${CARLA_RUNS_ROOT:-${repository_dir}/runs}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/carla doctor
+  scripts/carla cluster {up|down|status|logs} [sim-0|sim-1|sim-2]
+  scripts/carla train [train.py options]
+  scripts/carla evaluate --model-path PATH [eval.py options]
+  scripts/carla drive --model-path PATH [drive.py options]
+  scripts/carla test
+
+Training leases sim-0. Evaluation and visual driving lease sim-2.
+Set CARLA_RL_CONFIG to select another checked-in experiment config.
+EOF
+}
+
+require_python_environment() {
+  if ! python -c 'import carla, gymnasium, stable_baselines3, tensorboard' >/dev/null 2>&1; then
+    echo "Python dependencies are unavailable. Run: conda activate carla_env" >&2
+    exit 2
+  fi
+}
+
+lease_and_run() {
+  local slot="$1"
+  local program="$2"
+  shift 2
+  require_python_environment
+  PYTHONPATH="${repository_dir}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    python -m carla_rl.server_slots --catalog "${catalog_path}" --slot "${slot}" -- \
+    python "${repository_dir}/${program}" --config "${config_path}" --server "${slot}" \
+      --runs-root "${runs_root}" "$@"
+}
+
+command_name="${1:-}"
+case "${command_name}" in
+  doctor)
+    echo "Repository: ${repository_dir}"
+    echo "Config: ${config_path}"
+    echo "CARLA_ROOT: ${CARLA_ROOT:-${HOME}/git/carla}"
+    if python -c 'import carla, gymnasium, stable_baselines3, tensorboard' >/dev/null 2>&1; then
+      python - <<'PY'
+from importlib import metadata
+for package in ("carla", "gymnasium", "stable-baselines3", "torch", "tensorboard"):
+    print(f"{package}: {metadata.version(package)}")
+PY
+    else
+      echo "Python packages: unavailable (run: conda activate carla_env)"
+    fi
+    if [[ -d "${CARLA_ROOT:-${HOME}/git/carla}/PythonAPI/carla/agents" ]]; then
+      echo "CARLA route-planner source: found"
+    else
+      echo "CARLA route-planner source: MISSING (set CARLA_ROOT)" >&2
+    fi
+    docker compose -f "${repository_dir}/infra/carla-compose.yaml" config --quiet
+    ;;
+  cluster)
+    shift
+    exec "${repository_dir}/scripts/carla-cluster" "$@"
+    ;;
+  train)
+    shift
+    lease_and_run sim-0 train.py "$@"
+    ;;
+  evaluate)
+    shift
+    lease_and_run sim-2 eval.py "$@"
+    ;;
+  drive)
+    shift
+    lease_and_run sim-2 drive.py "$@"
+    ;;
+  test)
+    require_python_environment
+    cd "${repository_dir}"
+    PYTHONPATH="${repository_dir}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+      python -m unittest discover -s tests -v
+    ;;
+  -h|--help|help|"")
+    usage
+    ;;
+  *)
+    echo "Unknown command: ${command_name}" >&2
+    usage
+    exit 2
+    ;;
+esac

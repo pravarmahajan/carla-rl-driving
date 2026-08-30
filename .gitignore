@@ -8,6 +8,7 @@ __pycache__/
 # Training artifacts / run logs - regenerated, not source
 logs/
 runs/
+artifacts/
 episode_log.txt
 *.log
 *.pid

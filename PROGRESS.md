@@ -537,6 +537,21 @@ Find a way to track experiment configs - right now we are relying on the logs on
   observation-registry and scenario refactor is required before config can
   select a speed-limit observation or a different town.
 
+## Repository artifact cleanup (2026-08-30)
+
+- **What changed:** Moved historical checkpoints, VecNormalize files, training
+  logs, TensorBoard events, and stale PID files from the repository root to
+  `artifacts/legacy/2026-08-30/`. Added a repo-local `scripts/carla` command
+  wrapper and optional `.envrc` path setup.
+- **Why:** Generated artifacts and project commands were mixed with source,
+  which obscured the current implementation and encouraged implicit defaults.
+- **Observed results:** All recorded PID files were stale before relocation;
+  no running training, TensorBoard, or CARLA process was affected.
+- **Conclusion:** New reproducible runs use `runs/<run-id>/`; the legacy files
+  remain recoverable but are excluded from Git.
+- **Unresolved questions:** An end-to-end CARLA smoke run remains required to
+  validate the current Docker and Python environment together.
+
 ## Repo layout notes
 
 - Model checkpoints (`*.zip`), tensorboard `logs/`, `episode_log.txt`, and
