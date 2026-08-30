@@ -12,12 +12,12 @@ usage() {
 Usage:
   scripts/carla doctor
   scripts/carla cluster {up|down|status|logs} [sim-0|sim-1|sim-2]
-  scripts/carla train [train.py options]
-  scripts/carla evaluate --model-path PATH [eval.py options]
-  scripts/carla drive --model-path PATH [drive.py options]
+  scripts/carla train [--slot sim-0|sim-1] [train.py options]
+  scripts/carla evaluate [--slot sim-1|sim-2] --model-path PATH [eval.py options]
+  scripts/carla drive [--slot sim-1|sim-2] --model-path PATH [drive.py options]
   scripts/carla test
 
-Training leases sim-0. Evaluation and visual driving lease sim-2.
+Training defaults to sim-0. Evaluation and visual driving default to sim-2.
 Set CARLA_RL_CONFIG to select another checked-in experiment config.
 EOF
 }
@@ -30,9 +30,15 @@ require_python_environment() {
 }
 
 lease_and_run() {
-  local slot="$1"
+  local default_slot="$1"
   local program="$2"
   shift 2
+  local slot="${default_slot}"
+  if [[ "${1:-}" == "--slot" ]]; then
+    [[ -n "${2:-}" ]] || { echo "--slot requires a slot name" >&2; exit 2; }
+    slot="$2"
+    shift 2
+  fi
   require_python_environment
   PYTHONPATH="${repository_dir}/src${PYTHONPATH:+:${PYTHONPATH}}" \
     python -m carla_rl.server_slots --catalog "${catalog_path}" --slot "${slot}" -- \

@@ -20,13 +20,15 @@ Conda.
 ## CARLA server cluster
 
 ```bash
-scripts/carla cluster up
+scripts/carla cluster up sim-0
 scripts/carla cluster status
 scripts/carla cluster logs sim-0
 scripts/carla cluster down
 ```
 
-`cluster up` starts three independent project-owned CARLA Docker containers:
+`cluster up sim-0` starts only the requested project-owned CARLA container.
+Omit the slot (`cluster up`) only when you deliberately need the full pool.
+The repository defines three independent but technically equivalent servers:
 
 | Slot | Host ports | Intended role |
 | --- | --- | --- |
@@ -48,13 +50,40 @@ scripts/carla drive --model-path runs/<training-run-id>/model
 ./start_tensorboard.sh
 ```
 
-The wrapper leases `sim-0` for training and `sim-2` for evaluation or driving.
+For a single evaluation of an archived policy, use only one simulator:
+
+```bash
+scripts/carla cluster up sim-2
+scripts/carla evaluate \
+  --model-path artifacts/legacy/2026-08-30/checkpoints/ppo_carla_model
+```
+
+The wrapper defaults to `sim-0` for training and `sim-2` for evaluation or
+driving. This is a resource-management convention, not a simulator capability:
+`sim-1` can be used for evaluation if it is otherwise idle.
+
+```bash
+scripts/carla cluster up sim-1
+scripts/carla evaluate --slot sim-1 --model-path runs/<training-run-id>/model
+```
+
 Every config-backed command writes a new `runs/<run-id>/` directory before
 connecting to CARLA. That directory contains the resolved config, Git state,
 dependency versions, CARLA route-planner provenance, and command metadata.
 
 Set `CARLA_RL_CONFIG=/absolute/path/to/config.json` to select a different
 checked-in experiment configuration.
+
+## Working with uncommitted code
+
+You can train or evaluate with uncommitted changes. The run manifest records
+the checked-out commit, a dirty-worktree flag/status, and `git.patch` covering
+tracked and untracked changes, so the exact source state can be reconstructed.
+
+That is useful during implementation, but a baseline or result you intend to
+compare over time should be rerun from a clean, committed revision. Use a Git
+branch/worktree for an implementation variant; use configs for supported
+parameter or feature selections within that variant.
 
 ## Archived baseline
 
