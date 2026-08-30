@@ -50,6 +50,10 @@ CARLA Docker containers
 6. Training saves model and VecNormalize state inside its run directory;
    evaluation saves `metrics.json`; driving saves `drive_results.json`.
 
+`scripts/carla doctor` reads Docker container state and the wrapper's lease
+records to show which slots are up and which are currently owned by a live
+repository client. A manually started CARLA client is outside this visibility.
+
 ## Server-slot policy
 
 The three servers use the same CARLA image and settings. Their roles are

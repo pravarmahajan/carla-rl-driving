@@ -29,6 +29,34 @@ require_python_environment() {
   fi
 }
 
+report_slot_status() {
+  local slot="$1"
+  local container_name="carla-rl-${slot}"
+  local container_state="not created"
+  local lease_state="idle"
+  local lock_dir="${CARLA_SLOT_LOCK_DIR:-/tmp/carla-rl-driving/slot-locks}"
+  local lock_file="${lock_dir}/${slot}.lock"
+
+  if command -v docker >/dev/null 2>&1; then
+    container_state="$(docker inspect --format '{{.State.Status}}' "${container_name}" 2>/dev/null || true)"
+    container_state="${container_state:-not created}"
+  else
+    container_state="docker unavailable"
+  fi
+
+  if [[ -s "${lock_file}" ]]; then
+    local lease_pid
+    lease_pid="$(python -c 'import json, sys; print(json.load(open(sys.argv[1]))["pid"])' "${lock_file}" 2>/dev/null || true)"
+    if [[ -n "${lease_pid}" ]] && kill -0 "${lease_pid}" 2>/dev/null; then
+      lease_state="leased by PID ${lease_pid}"
+    else
+      lease_state="stale lease record"
+    fi
+  fi
+
+  printf '  %-5s simulator: %-15s client: %s\n' "${slot}" "${container_state}" "${lease_state}"
+}
+
 lease_and_run() {
   local default_slot="$1"
   local program="$2"
@@ -66,7 +94,16 @@ PY
     else
       echo "CARLA route-planner source: MISSING (set CARLA_ROOT)" >&2
     fi
-    docker compose -f "${repository_dir}/infra/carla-compose.yaml" config --quiet
+    if command -v docker >/dev/null 2>&1; then
+      docker compose -f "${repository_dir}/infra/carla-compose.yaml" config --quiet
+      echo "Simulator slots:"
+      report_slot_status sim-0
+      report_slot_status sim-1
+      report_slot_status sim-2
+      echo "Client activity is reported only for commands launched through scripts/carla."
+    else
+      echo "Docker: unavailable" >&2
+    fi
     ;;
   cluster)
     shift

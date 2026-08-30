@@ -17,6 +17,12 @@ it for ordinary work in this checkout. The optional `.envrc` exports repository
 paths if `direnv` is installed and allowed; it intentionally does not activate
 Conda.
 
+`scripts/carla doctor` is read-only. In addition to dependency and CARLA source
+checks, it reports each slot's Docker state (`running`, `exited`, or not
+created) and whether a live repository client holds that slot's lease. The
+client-activity view covers only work launched through `scripts/carla`; it
+cannot identify a CARLA client started manually outside the wrapper.
+
 ## CARLA server cluster
 
 ```bash
