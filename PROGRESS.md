@@ -476,9 +476,18 @@ Simply reproduced Round 12 + 13 results. The car behaves in a similar manner. We
 - ** Round 15 & 16**
 The jitteriness is bothering me. Increased action_repeat to 8 (round 15) - it made no difference. In round 16, I tried reducing the low pass factor from 0.3 to 0.1 
 
+- ** Round 17 **
+Very bad idea to add speed limit. The car just stalls in one place.
+Let's first clean up our setup a bit so that we can run multiple experiments. This
+one experiment at a time is prohibitive
+Also clean up all the existing logs, lets just keep a few important ones
+we need a revision like system like in michelangelo. This way I run
+my code against the particular version for which my env is set.
 
 
 ## Planned next steps (prioritized)
+0. Cleanup and refactor your code so that running multiple experiments is easy.
+Find a way to track experiment configs - right now we are relying on the logs only.
 
 1. **Reward/feature fixes (do first, no algorithm risk)**:
    - Replace flat waypoint bonus with potential-based shaping:
