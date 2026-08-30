@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .config import ExperimentConfig, ServerCatalog, canonical_fingerprint
 
@@ -105,6 +105,8 @@ def create_run(
     repository: Path = DEFAULT_REPOSITORY,
     carla_root: Path = DEFAULT_CARLA_ROOT,
     run_name: str | None = None,
+    command: str | None = None,
+    runtime_overrides: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> Path:
     server = catalog.get(server_name)
@@ -123,12 +125,15 @@ def create_run(
     resolved["simulator"]["host"] = server.host
     resolved["simulator"]["rpc_port"] = server.rpc_port
     resolved["simulator"]["traffic_manager_port"] = server.traffic_manager_port
+    if runtime_overrides:
+        resolved["runtime"] = dict(runtime_overrides)
 
     manifest: dict[str, Any] = {
         "schema_version": 1,
         "run_id": run_id,
         "created_at": timestamp,
         "status": "created",
+        "command": command,
         "experiment": {
             "name": experiment.data["name"],
             "source": str(experiment.source),

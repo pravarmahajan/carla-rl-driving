@@ -9,6 +9,11 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from carla_gym_env import CarlaGymEnv
 import numpy as np
 import os
+import argparse
+import json
+from pathlib import Path
+
+from carla_rl.launch import DEFAULT_SERVER_CATALOG, create_configured_run
 
 
 def load_normalizer(env, vecnormalize_path):
@@ -83,16 +88,54 @@ def evaluate_model(model, env, normalizer=None, n_episodes=10):
     }
 
 def main():
-    env = CarlaGymEnv()
-    model = PPO.load("ppo_carla_model", env=env)
-    print("✓ Model loaded: ppo_carla_model\n")
+    parser = argparse.ArgumentParser(description="Evaluate a trained CARLA model")
+    parser.add_argument("-p", "--port", type=int, default=2000)
+    parser.add_argument("--model-path", default="ppo_carla_model",
+                        help="Checkpoint path without .zip")
+    parser.add_argument("--episodes", type=int, default=10)
+    parser.add_argument("--config", type=Path,
+                        help="Versioned experiment config. Creates an immutable evaluation run record.")
+    parser.add_argument("--catalog", type=Path, default=DEFAULT_SERVER_CATALOG)
+    parser.add_argument("--server", help="Server slot override used with --config")
+    parser.add_argument("--runs-root", type=Path, default=Path("runs"))
+    parser.add_argument("--run-name")
+    args = parser.parse_args()
 
-    normalizer = load_normalizer(env, "ppo_carla_model_vecnormalize.pkl")
+    run_dir = None
+    env_kwargs = {"no_rendering": True, "port": args.port}
+    if args.config:
+        resolved, run_dir = create_configured_run(
+            args.config, args.catalog, args.server, args.runs_root, args.run_name, "evaluate",
+            runtime_overrides={"model_path": args.model_path, "episodes": args.episodes},
+        )
+        environment = resolved["environment"]
+        simulator = resolved["simulator"]
+        env_kwargs = {
+            "no_rendering": simulator["no_rendering"],
+            "host": simulator["host"],
+            "port": simulator["rpc_port"],
+            "fixed_delta_seconds": simulator["fixed_delta_seconds"],
+            "action_repeat": environment["action_repeat"],
+            "steer_lowpass_alpha": environment["steer_lowpass_alpha"],
+            "max_physical_ticks": environment["max_physical_ticks"],
+            "seed": resolved["algorithm"]["seed"],
+        }
+        print(f"Created reproducible evaluation run: {run_dir}")
+
+    env = CarlaGymEnv(**env_kwargs)
+    model = PPO.load(args.model_path, env=env)
+    print(f"✓ Model loaded: {args.model_path}\n")
+
+    normalizer = load_normalizer(env, args.model_path + "_vecnormalize.pkl")
     print("✓ Loaded observation normalization stats" if normalizer is not None
           else "! No normalization stats found -- assuming an older, unnormalized model\n")
 
-    print("Running 10 evaluation episodes...")
-    metrics = evaluate_model(model, env, normalizer=normalizer, n_episodes=10)
+    print(f"Running {args.episodes} evaluation episodes...")
+    metrics = evaluate_model(model, env, normalizer=normalizer, n_episodes=args.episodes)
+    if run_dir is not None:
+        (run_dir / "metrics.json").write_text(
+            json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
     env.close()
 

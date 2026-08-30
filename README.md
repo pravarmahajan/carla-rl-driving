@@ -51,16 +51,18 @@ Run a client while holding an exclusive simulator lease:
 
 ```bash
 PYTHONPATH=src python -m carla_rl.server_slots --slot sim-0 -- \
-  python train.py --port 2000
+  python train.py --config configs/experiments/baseline_state_v1.json --server sim-0
 
 PYTHONPATH=src python -m carla_rl.server_slots --slot sim-2 -- \
-  python drive.py --port 2020
+  python drive.py --config configs/experiments/baseline_state_v1.json --server sim-2 \
+  --model-path /absolute/path/to/checkpoint
 ```
 
 Use `--slot auto` to take the first available slot. The wrapper exports
 `CARLA_HOST`, `CARLA_PORT`, `CARLA_TM_PORT`, and `CARLA_SLOT` to the child
-process. Explicit CLI ports remain supported until the training and driving
-entry points are migrated to the shared configuration module.
+process. Config-backed train, evaluation, and drive commands read the same
+server catalog and create an immutable run record before connecting. Explicit
+CLI ports remain supported for legacy invocation.
 
 ## Run manifests
 
@@ -76,6 +78,12 @@ PYTHONPATH=src python -m carla_rl.run_manifest \
 The command writes the resolved configuration, Git revision/dirty state,
 dependency versions, server selection, and a source diff into `runs/<run-id>/`.
 It refuses to overwrite an existing run.
+
+The current implementation deliberately validates the recorded `state-v1`
+observation/action layout rather than pretending arbitrary feature lists work.
+Adding `speed_limit_kmh` still needs the upcoming observation-registry refactor;
+until then, a config selecting it fails loudly instead of silently running the
+nine-feature agent.
 
 ## Tests
 

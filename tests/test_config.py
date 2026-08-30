@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from carla_rl.config import ConfigurationError, ExperimentConfig, ServerCatalog
+from carla_rl.launch import _validate_current_environment
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -56,8 +57,16 @@ class ExperimentConfigTests(unittest.TestCase):
         self.assertEqual(features[0], "speed_kmh")
         self.assertEqual(features[-1], "obstacle_distance_m")
         self.assertEqual(len(experiment.fingerprint), 64)
+        _validate_current_environment(experiment)
+
+    def test_unsupported_feature_layout_fails_instead_of_being_ignored(self):
+        experiment = ExperimentConfig.load(
+            REPOSITORY / "configs" / "experiments" / "baseline_state_v1.json"
+        )
+        experiment.data["environment"]["observation_features"].append("speed_limit_kmh")
+        with self.assertRaisesRegex(ValueError, "observation feature registry"):
+            _validate_current_environment(experiment)
 
 
 if __name__ == "__main__":
     unittest.main()
-

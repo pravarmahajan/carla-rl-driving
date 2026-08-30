@@ -515,6 +515,28 @@ Find a way to track experiment configs - right now we are relying on the logs on
 
 4. Try new cities/scenarios.
 
+## Reproducibility platform implementation (2026-08-29)
+
+- **What changed:** Added versioned server/experiment configuration, immutable
+  run manifests, process-local CARLA slot leasing, and config-backed
+  `train.py`, `eval.py`, and `drive.py` launch paths. CARLA connection host,
+  port, fixed timestep, action repeat, steering filter, episode limit, PPO
+  hyperparameters, and seed are now resolved from a recorded configuration for
+  config-backed runs.
+- **Why:** The previous scripts encoded experiment settings in CLI defaults and
+  source files, making it difficult to identify the executable setup behind a
+  checkpoint or to use independent CARLA server instances safely.
+- **Observed results:** The standard-library infrastructure suite passed (seven
+  tests). No CARLA training or evaluation episode was launched as part of this
+  implementation.
+- **Conclusion:** This establishes reproducible provenance and simulator
+  allocation for the current nine-observation baseline. It does not establish
+  deterministic CARLA physics or policy performance.
+- **Unresolved questions:** The environment still has a hard-coded
+  observation/action layout and does not load towns from config. A future
+  observation-registry and scenario refactor is required before config can
+  select a speed-limit observation or a different town.
+
 ## Repo layout notes
 
 - Model checkpoints (`*.zip`), tensorboard `logs/`, `episode_log.txt`, and

@@ -26,12 +26,16 @@ class RunManifestTests(unittest.TestCase):
                 Path(directory),
                 repository=REPOSITORY,
                 run_name="Manifest Test",
+                command="evaluate",
+                runtime_overrides={"episodes": 3, "model_path": "models/candidate"},
                 now=fixed_time,
             )
             manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
             resolved = json.loads((run_dir / "resolved_config.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["server_catalog"]["selected"], "sim-2")
+            self.assertEqual(manifest["command"], "evaluate")
             self.assertEqual(resolved["simulator"]["rpc_port"], 2020)
+            self.assertEqual(resolved["runtime"]["episodes"], 3)
             self.assertTrue((run_dir / "git.patch").exists())
             self.assertIn("carla_python_agents", manifest["external_sources"])
             self.assertIn("src/carla_rl/run_manifest.py", (run_dir / "git.patch").read_text(encoding="utf-8"))

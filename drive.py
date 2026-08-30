@@ -13,6 +13,10 @@ import weakref
 import os
 import math
 import datetime
+import json
+from pathlib import Path
+
+from carla_rl.launch import DEFAULT_SERVER_CATALOG, create_configured_run
 
 
 def load_normalizer(env, vecnormalize_path):
@@ -136,14 +140,43 @@ def main():
     parser = argparse.ArgumentParser(description="Drive with trained model in CARLA")
     parser.add_argument("-p", "--port", type=int, default=2000,
                          help="CARLA server port (default: 2000)")
+    parser.add_argument("--model-path", default="ppo_carla_model",
+                        help="Checkpoint path without .zip")
+    parser.add_argument("--config", type=Path,
+                        help="Versioned experiment config. Creates an immutable drive run record.")
+    parser.add_argument("--catalog", type=Path, default=DEFAULT_SERVER_CATALOG)
+    parser.add_argument("--server", help="Server slot override used with --config")
+    parser.add_argument("--runs-root", type=Path, default=Path("runs"))
+    parser.add_argument("--run-name")
     args = parser.parse_args()
 
+    run_dir = None
+    env_kwargs = {"port": args.port}
+    if args.config:
+        resolved, run_dir = create_configured_run(
+            args.config, args.catalog, args.server, args.runs_root, args.run_name, "drive",
+            runtime_overrides={"no_rendering": False, "model_path": args.model_path},
+        )
+        environment = resolved["environment"]
+        simulator = resolved["simulator"]
+        env_kwargs = {
+            "no_rendering": False,
+            "host": simulator["host"],
+            "port": simulator["rpc_port"],
+            "fixed_delta_seconds": simulator["fixed_delta_seconds"],
+            "action_repeat": environment["action_repeat"],
+            "steer_lowpass_alpha": environment["steer_lowpass_alpha"],
+            "max_physical_ticks": environment["max_physical_ticks"],
+            "seed": resolved["algorithm"]["seed"],
+        }
+        print(f"Created reproducible drive run: {run_dir}")
+
     # Initialize environment
-    env = CarlaGymEnv(port=args.port)
+    env = CarlaGymEnv(**env_kwargs)
     world = env.world
 
     # Load the trained model
-    model_path = "ppo_carla_model"
+    model_path = args.model_path
     mtime = datetime.datetime.fromtimestamp(os.path.getmtime(model_path + ".zip"))
     model = PPO.load(model_path, env=env)
     print(f"✓ Model loaded: {model_path}.zip (saved {mtime:%Y-%m-%d %H:%M:%S})")
@@ -239,6 +272,18 @@ def main():
     for i, (steps, reward, outcome) in enumerate(results):
         print(f"  Attempt {i + 1}: {steps:4d} steps, reward={reward:8.2f}, {outcome}")
     print("=" * 60)
+    if run_dir is not None:
+        (run_dir / "drive_results.json").write_text(
+            json.dumps(
+                [
+                    {"attempt": index + 1, "steps": steps, "reward": reward, "termination_reason": outcome}
+                    for index, (steps, reward, outcome) in enumerate(results)
+                ],
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
 if __name__ == "__main__":
     main()

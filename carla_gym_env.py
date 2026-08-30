@@ -20,12 +20,25 @@ from agents.navigation.global_route_planner import GlobalRoutePlanner
 class CarlaGymEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, no_rendering=False, port=2000):
+    def __init__(
+        self,
+        no_rendering=False,
+        host="127.0.0.1",
+        port=2000,
+        fixed_delta_seconds=0.05,
+        action_repeat=4,
+        steer_lowpass_alpha=0.1,
+        max_physical_ticks=1500,
+        seed=None,
+    ):
         super(CarlaGymEnv, self).__init__()
         self.no_rendering = no_rendering
+        self.host = host
+        self.initial_seed = seed
+        self._python_random = random.Random(seed)
 
         # Connect to your Dockerized CARLA Server
-        self.client = carla.Client("127.0.0.1", port)
+        self.client = carla.Client(host, port)
         self.client.set_timeout(10.0)
         self.world = self.client.get_world()
         self.blueprint_library = self.world.get_blueprint_library()
@@ -34,7 +47,7 @@ class CarlaGymEnv(gym.Env):
         # Enable synchronous mode for deterministic training/eval
         settings = self.world.get_settings()
         settings.synchronous_mode = True
-        settings.fixed_delta_seconds = 0.05  # 20 Hz
+        settings.fixed_delta_seconds = fixed_delta_seconds
         # no_rendering_mode is a server-wide setting, not per-client -- always
         # set it explicitly (rather than leaving whatever a previous session
         # left behind) so there's no cross-run leakage. Training never
@@ -59,7 +72,7 @@ class CarlaGymEnv(gym.Env):
         self.waypoint_index = 0
         self.goal_location = None
         self.episode_steps = 0
-        self.max_episode_steps = 1500  # ~75 seconds at 20 Hz
+        self.max_episode_steps = max_physical_ticks
         self.stall_counter = 0
         self.prev_distance_to_goal = 0.0
         self.prev_steer = 0.0
@@ -78,8 +91,8 @@ class CarlaGymEnv(gym.Env):
         # old reward-based steering-smoothness penalty (which was taxing the
         # policy's own Gaussian exploration noise and fighting ent_coef; see
         # PROGRESS.md round 12).
-        self.action_repeat = 4
-        self.steer_lowpass_alpha = 0.1  # applied = 0.7*prev + 0.3*raw each tick
+        self.action_repeat = action_repeat
+        self.steer_lowpass_alpha = steer_lowpass_alpha
 
         # 1. Define Action Space: Continuous values for [Steering (-1.0 to
         # 1.0), Throttle (0.0 to 1.0), Brake (0.0 to 1.0)]. Brake used to be
@@ -114,6 +127,8 @@ class CarlaGymEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        if seed is not None:
+            self._python_random.seed(seed)
         self._cleanup()  # Wipe out old actors from previous episodes
 
         # A destroyed actor's collision footprint isn't actually cleared
@@ -162,7 +177,7 @@ class CarlaGymEnv(gym.Env):
         if self.vehicle is None:
             # Random spawn (with retry logic for collision at spawn point)
             spawn_points = self.map.get_spawn_points()
-            random.shuffle(spawn_points)
+            self._python_random.shuffle(spawn_points)
             for spawn_point in spawn_points:
                 try:
                     self.vehicle = self.world.spawn_actor(blueprint, spawn_point)

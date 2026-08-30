@@ -8,6 +8,9 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.utils import get_schedule_fn
 from carla_gym_env import CarlaGymEnv
 import os
+from pathlib import Path
+
+from carla_rl.launch import DEFAULT_SERVER_CATALOG, create_configured_run
 
 class PeriodicSaveCallback(BaseCallback):
     """Save to the canonical model path periodically during a long run, so
@@ -209,14 +212,56 @@ def parse_args():
                          help="Ignore any existing model at --model-path and start from scratch")
     parser.add_argument("-p", "--port", type=int, default=2000,
                          help="CARLA server port (default: 2000)")
+    parser.add_argument("--config", type=Path,
+                        help="Versioned experiment config. Creates an immutable run directory.")
+    parser.add_argument("--catalog", type=Path, default=DEFAULT_SERVER_CATALOG,
+                        help="CARLA server catalog used with --config")
+    parser.add_argument("--server", help="Server slot override used with --config")
+    parser.add_argument("--runs-root", type=Path, default=Path("runs"),
+                        help="Parent directory for immutable config-backed runs")
+    parser.add_argument("--run-name", help="Optional suffix for a config-backed run")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
 
+    run_dir = None
+    env_kwargs = {"no_rendering": True, "port": args.port}
+    episode_log_path = "episode_log.txt"
+    if args.config:
+        resolved, run_dir = create_configured_run(
+            args.config, args.catalog, args.server, args.runs_root, args.run_name, "train"
+        )
+        environment = resolved["environment"]
+        algorithm = resolved["algorithm"]
+        simulator = resolved["simulator"]
+        env_kwargs = {
+            "no_rendering": simulator["no_rendering"],
+            "host": simulator["host"],
+            "port": simulator["rpc_port"],
+            "fixed_delta_seconds": simulator["fixed_delta_seconds"],
+            "action_repeat": environment["action_repeat"],
+            "steer_lowpass_alpha": environment["steer_lowpass_alpha"],
+            "max_physical_ticks": environment["max_physical_ticks"],
+            "seed": algorithm["seed"],
+        }
+        args.total_timesteps = algorithm["total_timesteps"]
+        args.n_steps = algorithm["n_steps_per_environment"]
+        args.n_epochs = algorithm["n_epochs"]
+        args.batch_size = algorithm["batch_size"]
+        args.learning_rate = algorithm["learning_rate"]
+        args.gamma = algorithm["gamma"]
+        args.gae_lambda = algorithm["gae_lambda"]
+        args.clip_range = algorithm["clip_range"]
+        args.vf_coef = algorithm["vf_coef"]
+        args.ent_coef = algorithm["ent_coef"]
+        args.model_path = str(run_dir / "model")
+        episode_log_path = str(run_dir / "episode_log.txt")
+        print(f"Created reproducible training run: {run_dir}")
+
     # Define a state-saving directory for tensorboard logs
-    logdir = "./logs/"
+    logdir = str(run_dir / "tensorboard") if run_dir else "./logs/"
     os.makedirs(logdir, exist_ok=True)
 
     vecnormalize_path = args.model_path + "_vecnormalize.pkl"
@@ -231,7 +276,7 @@ if __name__ == "__main__":
     # (which is what we're doing here to get VecNormalize in front of it) --
     # without it, no "episode" info key ever gets set, so EpisodeLoggerCallback
     # and SB3's own rollout/ep_rew_mean stats silently never fire.
-    venv = DummyVecEnv([lambda: Monitor(CarlaGymEnv(no_rendering=True, port=args.port))])
+    venv = DummyVecEnv([lambda: Monitor(CarlaGymEnv(**env_kwargs))])
 
     if resume and os.path.exists(vecnormalize_path):
         print(f"Loading existing observation/reward normalization stats from {vecnormalize_path}...")
@@ -272,13 +317,14 @@ if __name__ == "__main__":
             clip_range=args.clip_range,
             vf_coef=args.vf_coef,
             ent_coef=args.ent_coef,
+            seed=env_kwargs.get("seed"),
         )
 
     print("--- Starting Reinforcement Learning Pipeline ---")
     print(f"Hyperparameters: {vars(args)}")
 
     callback = CallbackList([
-        EpisodeLoggerCallback(),
+        EpisodeLoggerCallback(log_file=episode_log_path),
         PeriodicSaveCallback(args.model_path, vecnormalize_path, save_freq=10000),
         PeriodicEvalCallback(eval_freq_rollouts=5, n_eval_episodes=args.eval_episodes),
     ])
