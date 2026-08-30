@@ -10,17 +10,17 @@
   },
   "artifacts": {
     "model": {
-      "path": "ppo_carla_model.zip",
+      "path": "artifacts/legacy/2026-08-30/checkpoints/ppo_carla_model.zip",
       "sha256": "fb94adc6005f835fb41699ff7f583142835fd41876778b4c7ba3c5cb81223dd4",
       "size_bytes": 152915
     },
     "vecnormalize": {
-      "path": "ppo_carla_model_vecnormalize.pkl",
+      "path": "artifacts/legacy/2026-08-30/checkpoints/ppo_carla_model_vecnormalize.pkl",
       "sha256": "4274c863c07621fbb2d10fbb210ae6b9bf5df17d2a515b4cae537ff6d07f9b2d",
       "size_bytes": 1674
     },
     "training_log": {
-      "path": "train_round16b_action_low_pass_continue.log"
+      "path": "artifacts/legacy/2026-08-30/logs/train_round16b_action_low_pass_continue.log"
     }
   },
   "model_metadata": {
