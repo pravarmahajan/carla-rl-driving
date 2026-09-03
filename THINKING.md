@@ -1,4 +1,27 @@
+# Episode 17
+## Sep 2 2026
 
+I refactored the messy code. It is generalizable enough to run multiple simulations simultaneously. Currently it can run upto 3 parallel simulations.
+
+Now that I ahve been able to run the training on 1 town (town 10), I would like to see how a model trained on 1 town alone behaves in a new 
+out of sample environment. I am not expecting too much - on town 10 it succeeded 9/10 times, I expect it to not succeed more than 5 times. Lets see!
+
+Observation: The rl agent has been observed to work on one town example. It succeeds on 9 out of 10 routes
+
+Hypothesis: On out of sample town, I expect the agent to not work that well. It will go in straight lines, but town specific features would
+be harder to learn.
+
+Experiment: We will try 3 different out of sample towns, chosen at random.
+
+Prediction: It will fail miserably! 9/10 success rate won't be achieved
+
+Primary metric: Number of successful navigations, where the agent is able to reach the end.
+
+Confounders: I don't know - i haven't checked other towns.
+
+
+
+======
 # Episode 14
 ## Aug 21, 2026
 
