@@ -67,6 +67,13 @@ class ExperimentConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "observation feature registry"):
             _validate_current_environment(experiment)
 
+    def test_explicit_town_is_supported(self):
+        experiment = ExperimentConfig.load(
+            REPOSITORY / "configs" / "experiments" / "baseline_state_v1.json"
+        )
+        experiment.data["simulator"]["town"] = "Town03"
+        _validate_current_environment(experiment)
+
 
 if __name__ == "__main__":
     unittest.main()

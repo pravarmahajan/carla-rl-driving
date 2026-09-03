@@ -30,6 +30,7 @@ class CarlaGymEnv(gym.Env):
         steer_lowpass_alpha=0.1,
         max_physical_ticks=1500,
         seed=None,
+        town=None,
     ):
         super(CarlaGymEnv, self).__init__()
         self.no_rendering = no_rendering
@@ -40,7 +41,11 @@ class CarlaGymEnv(gym.Env):
         # Connect to your Dockerized CARLA Server
         self.client = carla.Client(host, port)
         self.client.set_timeout(10.0)
-        self.world = self.client.get_world()
+        # Historical runs inherited CARLA's default map. New experiment
+        # configs may request an explicit map so evaluation cannot silently
+        # depend on whatever a previous client left loaded on the server.
+        self.world = self.client.load_world(town) if town else self.client.get_world()
+        self.town = self.world.get_map().name
         self.blueprint_library = self.world.get_blueprint_library()
         self.map = self.world.get_map()
 

@@ -35,6 +35,8 @@ def evaluate_model(model, env, normalizer=None, n_episodes=10):
     episode_rewards = []
     episode_lengths = []
     failures = 0
+    termination_counts = {}
+    episodes = []
 
     for episode in range(n_episodes):
         obs, _ = env.reset()
@@ -65,6 +67,15 @@ def evaluate_model(model, env, normalizer=None, n_episodes=10):
         # than "success" (crash/off_road/wrong_way/stall/timeout) is a failure.
         if termination_reason != "success":
             failures += 1
+        termination_counts[termination_reason] = termination_counts.get(termination_reason, 0) + 1
+        episodes.append(
+            {
+                "episode": episode + 1,
+                "reward": episode_reward,
+                "steps": episode_length,
+                "termination_reason": termination_reason,
+            }
+        )
 
         print(f"Episode {episode + 1:2d}: reward={episode_reward:7.2f}, "
               f"steps={episode_length:4d}, outcome={termination_reason}")
@@ -81,10 +92,14 @@ def evaluate_model(model, env, normalizer=None, n_episodes=10):
     print(f"{'='*50}")
 
     return {
+        "n_episodes": n_episodes,
+        "n_success": n_episodes - failures,
         "mean_reward": mean_reward,
         "std_reward": std_reward,
         "mean_length": mean_length,
         "success_rate": success_rate,
+        "termination_counts": termination_counts,
+        "episodes": episodes,
     }
 
 def main():
@@ -119,6 +134,7 @@ def main():
             "steer_lowpass_alpha": environment["steer_lowpass_alpha"],
             "max_physical_ticks": environment["max_physical_ticks"],
             "seed": resolved["algorithm"]["seed"],
+            "town": simulator["town"],
         }
         print(f"Created reproducible evaluation run: {run_dir}")
 

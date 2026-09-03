@@ -34,8 +34,8 @@ def _validate_current_environment(experiment: ExperimentConfig) -> None:
     if tuple(environment["action_features"]) != SUPPORTED_ACTION_FEATURES:
         raise ValueError("This code currently implements only vehicle-control-v1 actions")
     town = experiment.data["simulator"].get("town")
-    if town is not None:
-        raise ValueError("This code does not yet load towns from experiment config")
+    if town is not None and (not isinstance(town, str) or not town):
+        raise ValueError("simulator.town must be null or a non-empty CARLA map name")
 
 
 def create_configured_run(
