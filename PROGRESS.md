@@ -552,6 +552,30 @@ Find a way to track experiment configs - right now we are relying on the logs on
 - **Unresolved questions:** An end-to-end CARLA smoke run remains required to
   validate the current Docker and Python environment together.
 
+## Cross-town exploratory evaluation (2026-09-02)
+
+- **What changed:** Added explicit CARLA town loading from experiment config,
+  cross-town configs, and JSON-safe per-episode evaluation results. Evaluated
+  the frozen Round 16b checkpoint for ten random routes each on Town01, Town03,
+  and Town05, sequentially on `sim-2`, without retraining.
+- **Why:** Determine whether the policy trained on inferred Town10 geometry
+  transfers to maps with different road layouts.
+- **Observed results:** Town01: 9/10 success, 1 timeout, mean reward 960.32.
+  Town03: 5/10 success, 3 timeouts, 1 crash, 1 stall, mean reward 728.27.
+  Town05: 7/10 success, 2 timeouts, 1 stall, mean reward 702.16. An attempted
+  Town07 evaluation failed before environment construction because the running
+  CARLA package did not actually contain that map; Town01 replaced it after
+  direct `load_world` validation.
+- **Conclusion:** The policy has non-trivial cross-town transfer, but its
+  performance is heterogeneous: it matched the 9/10 Town10 reference on
+  Town01, dropped on Town05, and degraded substantially on Town03. The blanket
+  prediction that it would fail on every held-out town is not supported.
+- **Unresolved questions:** Routes were random rather than fixed or difficulty
+  matched, and there are only ten episodes per town. Differences cannot yet be
+  attributed specifically to town identity rather than route length, topology,
+  or spawn/goal distribution. Establish fixed route suites and topology-aware
+  metrics before making a training decision.
+
 ## Repo layout notes
 
 - Model checkpoints (`*.zip`), tensorboard `logs/`, `episode_log.txt`, and
