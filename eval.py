@@ -49,7 +49,7 @@ def evaluate_model(model, env, normalizer=None, n_episodes=10):
             action, _ = model.predict(predict_obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
 
-            episode_reward += reward
+            episode_reward += float(reward)
             episode_length += 1
 
             if terminated or truncated:
@@ -71,7 +71,7 @@ def evaluate_model(model, env, normalizer=None, n_episodes=10):
         episodes.append(
             {
                 "episode": episode + 1,
-                "reward": episode_reward,
+                "reward": float(episode_reward),
                 "steps": episode_length,
                 "termination_reason": termination_reason,
             }
@@ -80,10 +80,10 @@ def evaluate_model(model, env, normalizer=None, n_episodes=10):
         print(f"Episode {episode + 1:2d}: reward={episode_reward:7.2f}, "
               f"steps={episode_length:4d}, outcome={termination_reason}")
 
-    mean_reward = np.mean(episode_rewards)
-    std_reward = np.std(episode_rewards)
-    mean_length = np.mean(episode_lengths)
-    success_rate = (n_episodes - failures) / n_episodes
+    mean_reward = float(np.mean(episode_rewards))
+    std_reward = float(np.std(episode_rewards))
+    mean_length = float(np.mean(episode_lengths))
+    success_rate = float((n_episodes - failures) / n_episodes)
 
     print(f"\n{'='*50}")
     print(f"Mean Reward:     {mean_reward:7.2f} ± {std_reward:7.2f}")
