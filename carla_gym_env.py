@@ -16,6 +16,15 @@ import os
 CARLA_ROOT = os.environ.get("CARLA_ROOT", os.path.expanduser("~/git/carla"))
 sys.path.insert(0, os.path.join(CARLA_ROOT, "PythonAPI", "carla"))
 from agents.navigation.global_route_planner import GlobalRoutePlanner
+from carla_rl.environment_components import (
+    ObservationInputs,
+    CarlaSession,
+    RewardInputs,
+    Round12Reward,
+    Round12Termination,
+    TerminationInputs,
+    heading_error_rad,
+)
 
 class CarlaGymEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
@@ -38,33 +47,23 @@ class CarlaGymEnv(gym.Env):
         self.initial_seed = seed
         self._python_random = random.Random(seed)
 
-        # Connect to your Dockerized CARLA Server
-        self.client = carla.Client(host, port)
-        self.client.set_timeout(10.0)
-        # Historical runs inherited CARLA's default map. New experiment
-        # configs may request an explicit map so evaluation cannot silently
-        # depend on whatever a previous client left loaded on the server.
-        self.world = self.client.load_world(town) if town else self.client.get_world()
-        self.town = self.world.get_map().name
-        self.blueprint_library = self.world.get_blueprint_library()
-        self.map = self.world.get_map()
-
-        # Enable synchronous mode for deterministic training/eval
-        settings = self.world.get_settings()
-        settings.synchronous_mode = True
-        settings.fixed_delta_seconds = fixed_delta_seconds
-        # no_rendering_mode is a server-wide setting, not per-client -- always
-        # set it explicitly (rather than leaving whatever a previous session
-        # left behind) so there's no cross-run leakage. Training never
-        # attaches a camera (only event-based collision/lane-invasion
-        # sensors), so disabling rendering entirely there skips CARLA's
-        # render-thread work per tick; drive.py needs it on for its camera
-        # feed, so it keeps the default (no_rendering=False).
-        settings.no_rendering_mode = no_rendering
-        self.world.apply_settings(settings)
-
-        # Route planner: resolves an actual point-A-to-point-B path along the road graph
-        self.route_planner = GlobalRoutePlanner(self.map, sampling_resolution=2.0)
+        # The session is the sole owner of client connection and server-wide
+        # synchronous/rendering settings.  These aliases retain the public
+        # interface used by drive.py and older notebooks.
+        self.session = CarlaSession(
+            carla, GlobalRoutePlanner,
+            host=host,
+            port=port,
+            town=town,
+            fixed_delta_seconds=fixed_delta_seconds,
+            no_rendering=no_rendering,
+        )
+        self.client = self.session.client
+        self.world = self.session.world
+        self.town = self.session.town
+        self.blueprint_library = self.session.blueprint_library
+        self.map = self.session.map
+        self.route_planner = self.session.route_planner
 
         self.actor_list = []
         self.vehicle = None
@@ -110,6 +109,12 @@ class CarlaGymEnv(gym.Env):
         )
 
         self.obstacle_lookahead = 30.0  # meters; also the "nothing detected" sentinel value
+        # These rules are deliberately CARLA-free.  Keeping them as explicit
+        # collaborators makes their numerical contracts testable without a
+        # running simulator and prevents lifecycle refactors from silently
+        # changing the frozen Round16b reward/termination semantics.
+        self.reward_rule = Round12Reward()
+        self.termination_rule = Round12Termination()
 
         # 2. Define Observation Space: Real values
         # [Forward Speed (km/h), Distance to next waypoint (m),
@@ -128,12 +133,21 @@ class CarlaGymEnv(gym.Env):
         # world.get_actors() -- it has to be queried separately via
         # get_level_bbs(). Cached once at construction since it's fixed for
         # the lifetime of the loaded map.
-        self.static_vehicle_bboxes = list(self.world.get_level_bbs(carla.CityObjectLabel.Car))
+        self.static_vehicle_bboxes = self.session.static_vehicle_bboxes
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         if seed is not None:
             self._python_random.seed(seed)
+        return self._reset_scenario(options)
+
+    def _reset_scenario(self, options=None):
+        """Own actor cleanup, spawn, sensors, and route construction.
+
+        Keeping scenario creation out of Gym's seed wrapper makes this the
+        single boundary to replace when fixed-route suites or traffic
+        scenarios are introduced; observation/reward/termination stay intact.
+        """
         self._cleanup()  # Wipe out old actors from previous episodes
 
         # A destroyed actor's collision footprint isn't actually cleared
@@ -338,74 +352,34 @@ class CarlaGymEnv(gym.Env):
             velocity = self.vehicle.get_velocity()
             speed = 3.6 * np.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)  # km/h
 
-            reward = -0.01  # Small per-step penalty to encourage efficiency
+            distance_to_goal = float(obs[3])
+            distance_to_waypoint = float(obs[1])
+            reached_waypoint = (
+                len(self.waypoints) > self.waypoint_index
+                and distance_to_waypoint < 2.0
+                and speed > 2.0
+            )
+            if reached_waypoint:
+                self.waypoint_index += 1
 
-            # Penalty for idling (not moving AND not accelerating)
-            if speed < 1.0 and throttle_action < 0.1:
-                reward -= 0.3  # Mild penalty for laziness
-
-            # Potential-based shaping on distance-to-goal: telescopes to a
-            # total bounded by net distance closed over the episode.
-            # Coefficient raised 0.5 -> 1.0 (round 12) so a full route's
-            # worth of progress is a clearly positive, dominant total rather
-            # than being swamped by the per-tick penalties below.
-            distance_to_goal = obs[3]
-            reward += 1.0 * (self.prev_distance_to_goal - distance_to_goal)
-            self.prev_distance_to_goal = float(distance_to_goal)
-
-            # Advance waypoint if we're close enough (only if actually moving).
-            # Milestone bonus, not the main reward driver.
-            if len(self.waypoints) > self.waypoint_index:
-                distance_to_waypoint = obs[1]
-                if distance_to_waypoint < 2.0 and speed > 2.0:  # Within 2m AND moving at least 2 km/h
-                    self.waypoint_index += 1
-                    reward += 2.0
-
-            # Reward for heading toward waypoint (only if moving).
-            if speed > 1.0:  # Only reward steering when actually moving
-                angle_error = abs(obs[2])
-                reward += max(0, 0.5 - angle_error / np.pi) * 0.1
-
-            # Continuous penalty for drifting off lane center / misaligning
-            # with road heading. Coefficient brought back down 0.25 -> 0.15
-            # (round 12) -- round 11's 0.25 was calibrated in isolation and,
-            # stacked with every other penalty below, was part of why total
-            # reward went negative for normal driving.
-            lane_offset = obs[4]
-            heading_error = obs[5]
-            reward -= 0.15 * abs(lane_offset)
-            reward -= 0.1 * abs(heading_error)
-
-            # Penalize crossing a solid lane marking (wrong-lane / off-road
-            # edge). Round 12: dropped plain `Broken` (dashed) back out of
-            # the trigger set (see _on_lane_invasion) -- dashed lines are
-            # what separate most same-direction lanes, and crossing one is
-            # *mandatory* when making a legal turn through most junctions,
-            # so penalizing it was directly punishing turning.
-            if self.lane_invaded_this_step:
-                reward -= 2.0
-
-            # Round 12: the tick-to-tick steering-smoothness penalty (rounds
-            # 9-11) is removed. It was computed on the *sampled* action, so
-            # it penalized the policy's own Gaussian exploration noise, not
-            # just genuine erratic driving -- fighting ent_coef for control
-            # of the action distribution's variance (see PROGRESS.md round
-            # 12 diagnosis). Jitter is now addressed structurally instead,
-            # via action_repeat + the steer low-pass filter above.
-
-            # Obstacle-awareness shaping: obs[8] is the distance to the
-            # nearest detected obstacle ahead, sentinel-capped at
-            # self.obstacle_lookahead when nothing is in range. Penalize
-            # closing fast on a near obstacle, reward braking proportionally
-            # -- but only while actually moving (speed > 2 km/h), so this
-            # can't be farmed by parking near a static prop and holding the
-            # brake forever (a round 9-11 exploit structurally identical to
-            # the old flat speed-reward hack).
-            obstacle_distance = obs[8]
-            if obstacle_distance < self.obstacle_lookahead and speed > 2.0:
-                danger = (self.obstacle_lookahead - obstacle_distance) / self.obstacle_lookahead  # 0..1
-                reward -= danger * speed * 0.02
-                reward += danger * brake_action * 0.3
+            # Round12Reward is pure: all simulator reads remain above this
+            # point and the reward definition itself is now independently
+            # characterized in tests/test_environment_components.py.
+            reward = self.reward_rule.evaluate(RewardInputs(
+                speed_kmh=float(speed),
+                throttle=throttle_action,
+                brake=brake_action,
+                previous_distance_to_goal_m=self.prev_distance_to_goal,
+                distance_to_goal_m=distance_to_goal,
+                distance_to_waypoint_m=distance_to_waypoint,
+                route_heading_error_rad=float(obs[2]),
+                lane_offset_m=float(obs[4]),
+                lane_heading_error_rad=float(obs[5]),
+                obstacle_distance_m=float(obs[8]),
+                lane_invaded=self.lane_invaded_this_step,
+                reached_waypoint=reached_waypoint,
+            ))
+            self.prev_distance_to_goal = distance_to_goal
 
             # 4. Check terminal criteria
             # Track sustained near-zero speed regardless of throttle level.
@@ -417,21 +391,7 @@ class CarlaGymEnv(gym.Env):
             else:
                 self.stall_counter = 0
 
-            # Round 12: terminal penalties cut way down (150 -> 30, uniform
-            # across bad outcomes; timeout 75 -> 20). With per-tick reward
-            # now net-positive for decent driving, ending the episode early
-            # already forfeits all the future positive reward that would
-            # otherwise accrue (discounted opportunity cost) -- that's
-            # already a strong, sufficient disincentive against dying, so a
-            # large terminal penalty stacked on top isn't needed and, worse,
-            # previously *inverted* the incentive once per-tick reward was
-            # negative (see PROGRESS.md round 12 diagnosis: rounds 9-11's
-            # best-ever discovered outcome was stalling immediately).
-            if self.crashed:
-                reward -= 30.0
-                terminated = True
-                termination_reason = "crash"
-            elif self.off_road:
+            if self.off_road:
                 # Diagnostic logging: off_road now only fires when the
                 # vehicle's center is outside every drivable lane polygon on
                 # a *non-junction* segment, so this should mostly be genuine
@@ -454,28 +414,19 @@ class CarlaGymEnv(gym.Env):
                       f"is_junction={in_junction}, dist_to_lane={dist_to_lane:.1f}m, "
                       f"lateral_offset={obs[4]:.2f}m, heading_error_deg={math.degrees(obs[5]):.1f}, "
                       f"speed={speed:.1f}km/h, episode_steps={self.episode_steps}")
-                reward -= 30.0
-                terminated = True
-                termination_reason = "off_road"
-            elif self.wrong_way:
-                reward -= 30.0
-                terminated = True
-                termination_reason = "wrong_way"
-            elif self.stall_counter >= 20:  # ~1 second of sustained stalling
-                reward -= 30.0
-                terminated = True
-                termination_reason = "stall"
-            elif self.waypoint_index >= len(self.waypoints):
-                # Reached the end of the route.
-                reward += 500.0
-                terminated = True
-                termination_reason = "success"
-
-            # 5. Episode truncation (time limit)
-            if self.episode_steps >= self.max_episode_steps:
-                truncated = True
-                reward -= 20.0
-                termination_reason = "timeout"
+            outcome = self.termination_rule.evaluate(TerminationInputs(
+                crashed=self.crashed,
+                off_road=self.off_road,
+                wrong_way=self.wrong_way,
+                stall_counter=self.stall_counter,
+                reached_goal=self.waypoint_index >= len(self.waypoints),
+                episode_steps=self.episode_steps,
+                max_episode_steps=self.max_episode_steps,
+            ))
+            reward += outcome.reward_adjustment
+            terminated = outcome.terminated
+            truncated = outcome.truncated
+            termination_reason = outcome.reason
 
             total_reward += reward
 
@@ -585,16 +536,21 @@ class CarlaGymEnv(gym.Env):
             lane_offset = ldx * right_x + ldy * right_y
             lane_offset = float(np.clip(lane_offset, -5.0, 5.0))
 
-            heading_diff = vehicle_yaw - lane_tf.rotation.yaw
-            heading_diff = ((heading_diff + 180) % 360) - 180  # Normalize to [-180, 180]
-            heading_error = heading_diff * np.pi / 180
+            heading_error = heading_error_rad(vehicle_yaw, lane_tf.rotation.yaw)
 
         obstacle_distance = self._distance_to_obstacle_ahead(vehicle_loc, vehicle_yaw)
 
-        return np.array([speed, distance_to_waypoint, angle_to_waypoint, distance_to_goal,
-                          lane_offset, heading_error, self.prev_steer, self.prev_throttle,
-                          obstacle_distance],
-                         dtype=np.float32)
+        return ObservationInputs(
+            speed_kmh=speed,
+            distance_to_waypoint_m=distance_to_waypoint,
+            route_heading_error_rad=angle_to_waypoint,
+            distance_to_goal_m=distance_to_goal,
+            lane_offset_m=lane_offset,
+            lane_heading_error_rad=heading_error,
+            previous_steer=self.prev_steer,
+            previous_throttle=self.prev_throttle,
+            obstacle_distance_m=obstacle_distance,
+        ).as_state_v1()
 
     def _distance_to_obstacle_ahead(self, vehicle_loc, vehicle_yaw_deg, half_angle_deg=25.0):
         """Distance to the nearest obstacle roughly in front of the vehicle,
@@ -651,10 +607,4 @@ class CarlaGymEnv(gym.Env):
 
     def close(self):
         self._cleanup()
-        settings = self.world.get_settings()
-        settings.synchronous_mode = False
-        # Always restore rendering on exit, even if this instance disabled
-        # it -- it's a server-wide setting, so leaving it off would silently
-        # break camera output for whatever connects next (e.g. drive.py).
-        settings.no_rendering_mode = False
-        self.world.apply_settings(settings)
+        self.session.close()

@@ -576,6 +576,27 @@ Find a way to track experiment configs - right now we are relying on the logs on
   or spawn/goal distribution. Establish fixed route suites and topology-aware
   metrics before making a training decision.
 
+## Town05 longer-horizon evaluation (2026-09-03)
+
+- **What changed:** Evaluated the same frozen Round 16b checkpoint on ten
+  Town05 random routes with `max_physical_ticks` increased from 1500 to 3000
+  (375 to 750 agent decisions). The model, town, policy determinism, seed,
+  reward, and all other configuration values were held unchanged. Run:
+  `runs/20260903T054707.037988Z-cross-town-town05-horizon750`.
+- **Why:** Check whether Town05 episodes that reached the 375-step cap would
+  complete with more time, without retraining.
+- **Observed results:** 7/10 success, identical to the original Town05
+  aggregate. One success lasted 462 steps; one episode ran for 589 steps and
+  ended off-road. Failures were 1 off-road and 2 stalls; no episode timed out
+  at the new cap. Mean reward was 793.61 and mean length 201.8 decisions.
+- **Conclusion:** A 750-step horizon permits at least some long successful
+  trajectories, but it did not improve the aggregate success rate in this
+  ten-episode sample. Because random-route evaluation did not reproduce the
+  original episode-level outcomes exactly, this does not identify whether the
+  two previous timeouts individually would have succeeded.
+- **Unresolved questions:** A paired result requires a fixed route/spawn-goal
+  suite and the original 375-step outcomes recorded against those route IDs.
+
 ## Repo layout notes
 
 - Model checkpoints (`*.zip`), tensorboard `logs/`, `episode_log.txt`, and
@@ -583,3 +604,62 @@ Find a way to track experiment configs - right now we are relying on the logs on
   training runs, not source. They still live in this directory locally.
 - `ppo_carla_model.zip` is the canonical checkpoint `train.py`/`drive.py`/
   `eval.py` load from by default.
+
+## Environment boundary refactor (2026-09-04)
+
+- **What changed:** Introduced `carla_rl.environment_components` and made
+  `CarlaGymEnv` delegate CARLA connection/world settings to `CarlaSession`,
+  scenario construction to `_reset_scenario`, and the frozen state-v1
+  observation, Round-12 reward, and termination rules to named components.
+- **Why:** Separate simulator lifecycle from experiment semantics so that
+  future scenario and observation work does not accidentally change the
+  established baseline.
+- **Observed results:** Twelve unit tests pass, including numerical
+  characterization of the state-vector order, a representative reward
+  transition, heading wrap, and legacy terminal/time-limit precedence. No
+  CARLA policy evaluation was run for this refactor.
+- **Conclusion:** The pure contracts now have executable regression guards;
+  live simulator parity with the frozen checkpoint remains to be checked.
+- **Unresolved questions:** Actor spawn/sensor ownership is still contained
+  within `_reset_scenario` rather than its own object. A follow-up refactor
+  should move that code only after a fixed-route live parity suite exists.
+
+## Environment refactor smoke evaluation (2026-09-04)
+
+- **What changed:** Ran the frozen Round16b checkpoint through the refactored
+  environment for one deterministic Town05 evaluation episode. Run:
+  `runs/20260904T154104.111067Z-old8-refactor-smoke-retry`.
+- **Why:** Verify that the session-boundary refactor can still construct a
+  CARLA world, reset a scenario, load the saved VecNormalize state, and step
+  the policy end-to-end.
+- **Observed results:** The episode completed successfully in 60 decisions
+  with reward 694.49. A preceding attempt failed before environment creation
+  because `sim-2` was stopped; its preserved manifest is
+  `runs/20260904T153959.256207Z-old8-refactor-smoke`.
+- **Conclusion:** The refactored environment passes one live end-to-end smoke
+  path. This is not a parity benchmark: its route was randomly sampled and it
+  cannot establish equivalence with the pre-refactor implementation.
+- **Unresolved questions:** Close OLD-8 only after a fixed-route pre/post
+  characterization suite exists, and further isolate actor/sensor ownership.
+
+## Round16b Town10 refactor replication (2026-09-04)
+
+- **What changed:** Added the explicit `round16b-town10-replication-v1`
+  configuration and ran three independent ten-episode, deterministic-policy
+  evaluations of the frozen Round16b checkpoint on `Town10HD_Opt`, with no
+  training. Runs: `runs/20260904T154958.551337Z-round16b-town10-refactor-replication-1`,
+  `runs/20260904T155051.715486Z-round16b-town10-refactor-replication-2`, and
+  `runs/20260904T155146.698817Z-round16b-town10-refactor-replication-3`.
+- **Why:** Practical end-to-end validation that the OLD-8 environment boundary
+  refactor did not break the frozen baseline's established Town10 behavior.
+- **Observed results:** The three runs achieved 9/10, 10/10, and 8/10 success,
+  respectively: 27/30 (90%) overall. The recorded historical Town10 reference
+  was 9/10. All three failures were off-road; there were no crashes, stalls,
+  wrong-way terminations, or timeouts.
+- **Conclusion:** The practical replication criterion is met: the refactored
+  environment reproduces the historical 90% aggregate success rate across
+  three independent evaluations. Random routes mean this is performance
+  replication, not a step-for-step differential equivalence proof.
+- **Unresolved questions:** A future fixed-route/action-replay harness would
+  still be needed to detect a small behavioral change that happens not to
+  affect these aggregate outcomes.
