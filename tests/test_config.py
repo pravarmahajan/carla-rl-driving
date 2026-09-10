@@ -74,6 +74,19 @@ class ExperimentConfigTests(unittest.TestCase):
         experiment.data["simulator"]["town"] = "Town03"
         _validate_current_environment(experiment)
 
+    def test_invalid_scenario_is_rejected_at_config_load(self):
+        experiment = ExperimentConfig.load(
+            REPOSITORY / "configs" / "experiments" / "baseline_state_v1.json"
+        )
+        data = dict(experiment.data)
+        data["environment"] = dict(data["environment"])
+        data["environment"]["scenario"] = {"id": "bad", "actors": "not-a-list"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "experiment.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigurationError, "Invalid environment.scenario"):
+                ExperimentConfig.load(path)
+
 
 if __name__ == "__main__":
     unittest.main()

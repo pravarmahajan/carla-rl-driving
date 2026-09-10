@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from .scenarios import ScenarioConfigurationError, ScenarioSpec
+
 
 class ConfigurationError(ValueError):
     """Raised when a configuration is incomplete or internally inconsistent."""
@@ -141,5 +143,10 @@ class ExperimentConfig:
             raise ConfigurationError("action_features must be a non-empty list")
         if len(actions) != len(set(actions)):
             raise ConfigurationError("action_features contains duplicates")
+        scenario = environment.get("scenario")
+        if scenario is not None:
+            try:
+                ScenarioSpec.from_mapping(scenario)
+            except ScenarioConfigurationError as exc:
+                raise ConfigurationError(f"Invalid environment.scenario: {exc}") from exc
         return cls(data, source, canonical_fingerprint(data))
-

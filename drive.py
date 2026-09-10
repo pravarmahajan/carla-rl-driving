@@ -168,6 +168,8 @@ def main():
             "steer_lowpass_alpha": environment["steer_lowpass_alpha"],
             "max_physical_ticks": environment["max_physical_ticks"],
             "seed": resolved["algorithm"]["seed"],
+            "town": simulator["town"],
+            "scenario": environment.get("scenario"),
         }
         print(f"Created reproducible drive run: {run_dir}")
 

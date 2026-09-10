@@ -135,6 +135,7 @@ def main():
             "max_physical_ticks": environment["max_physical_ticks"],
             "seed": resolved["algorithm"]["seed"],
             "town": simulator["town"],
+            "scenario": environment.get("scenario"),
         }
         print(f"Created reproducible evaluation run: {run_dir}")
 

@@ -81,6 +81,37 @@ If a config asks for a different feature list—for example `speed_limit_kmh`—
 launcher fails rather than silently run a mismatched policy. The planned
 observation-registry refactor will turn such features into explicit modules.
 
+## Deterministic scenario boundary
+
+`environment.scenario` is an optional, versioned initial-world-state contract.
+It can select a named scenario ID, fixed ego start and goal, and named non-ego
+actors with explicit CARLA blueprint, transform, and blueprint attributes. The
+environment owns every listed actor and destroys it on reset or close. Scenario
+ID and actor count are emitted in Gymnasium `reset()`/`step()` info.
+
+This boundary intentionally does **not** implement actor motion, Traffic
+Manager/autopilot, traffic-light scheduling, pedestrians' AI controllers,
+reward changes, or perception inputs. Those behaviors must be added as a
+separate scenario/controller contract so an experiment can isolate them.
+
+```json
+"scenario": {
+  "id": "example-static-lead-v0",
+  "ego_start": {"x": 0.0, "y": 0.0, "z": 0.5, "yaw": 0.0},
+  "goal": {"x": 120.0, "y": 0.0, "z": 0.5},
+  "actors": [{
+    "name": "lead_vehicle",
+    "blueprint": "vehicle.tesla.model3",
+    "transform": {"x": 20.0, "y": 0.0, "z": 0.5, "yaw": 0.0},
+    "attributes": {"role_name": "scenario_lead"}
+  }]
+}
+```
+
+The coordinates above illustrate the schema only; use transforms verified on
+the selected CARLA map. The launchers pass this config to `CarlaGymEnv`, and
+the resolved configuration is recorded in the run manifest.
+
 ## External CARLA source dependency
 
 The `carla` wheel supplies the core Python API, while

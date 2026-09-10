@@ -25,6 +25,7 @@ from carla_rl.environment_components import (
     TerminationInputs,
     heading_error_rad,
 )
+from carla_rl.scenarios import ScenarioSpec
 
 class CarlaGymEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
@@ -40,12 +41,15 @@ class CarlaGymEnv(gym.Env):
         max_physical_ticks=1500,
         seed=None,
         town=None,
+        scenario=None,
     ):
         super(CarlaGymEnv, self).__init__()
         self.no_rendering = no_rendering
         self.host = host
         self.initial_seed = seed
         self._python_random = random.Random(seed)
+        self.scenario = ScenarioSpec.from_mapping(scenario) if scenario is not None else None
+        self._scenario_info = {}
 
         # The session is the sole owner of client connection and server-wide
         # synchronous/rendering settings.  These aliases retain the public
@@ -162,8 +166,18 @@ class CarlaGymEnv(gym.Env):
         # attempt multiple times). options = {"start_transform": carla.Transform,
         # "goal_location": carla.Location}
         options = options or {}
-        fixed_start = options.get("start_transform")
-        fixed_goal = options.get("goal_location")
+        option_scenario = options.get("scenario")
+        if option_scenario is not None and self.scenario is not None:
+            raise ValueError("Pass a scenario through the constructor or reset options, not both")
+        scenario = ScenarioSpec.from_mapping(option_scenario) if option_scenario is not None else self.scenario
+        if scenario is not None and ("start_transform" in options or "goal_location" in options):
+            raise ValueError("A scenario owns ego_start and goal; do not also pass start_transform or goal_location")
+        fixed_start = scenario.ego_start.to_carla_transform(carla) if scenario and scenario.ego_start else options.get("start_transform")
+        fixed_goal = scenario.goal.to_carla_location(carla) if scenario and scenario.goal else options.get("goal_location")
+        self._scenario_info = (
+            {"scenario_id": scenario.scenario_id, "scenario_actor_count": len(scenario.actors)}
+            if scenario is not None else {}
+        )
 
         blueprint = self.blueprint_library.filter("model3")[0]  # Tesla Model 3
         self.vehicle = None
@@ -210,6 +224,9 @@ class CarlaGymEnv(gym.Env):
 
         self.actor_list.append(self.vehicle)
 
+        if scenario is not None:
+            self._spawn_scenario_actors(scenario)
+
         # Attach collision sensor
         self.crashed = False
         collision_bp = self.blueprint_library.find("sensor.other.collision")
@@ -247,8 +264,28 @@ class CarlaGymEnv(gym.Env):
         # Extract initial state observation
         obs = self._get_observation()
         self.prev_distance_to_goal = float(obs[3])
-        info = {}
+        info = dict(self._scenario_info)
         return obs, info
+
+    def _spawn_scenario_actors(self, scenario):
+        """Spawn scenario-owned non-ego actors or fail setup without leaking actors."""
+        try:
+            for actor_spec in scenario.actors:
+                blueprint = self.blueprint_library.find(actor_spec.blueprint)
+                for name, value in actor_spec.attributes.items():
+                    if not blueprint.has_attribute(name):
+                        raise ValueError(
+                            f"Scenario actor {actor_spec.name!r} blueprint {actor_spec.blueprint!r} "
+                            f"does not support attribute {name!r}"
+                        )
+                    blueprint.set_attribute(name, value)
+                actor = self.world.spawn_actor(
+                    blueprint, actor_spec.transform.to_carla_transform(carla)
+                )
+                self.actor_list.append(actor)
+        except Exception:
+            self._cleanup()
+            raise
 
     def step(self, action):
         # 1. Unpack the RL action once -- held fixed (steer additionally
@@ -433,7 +470,9 @@ class CarlaGymEnv(gym.Env):
             if terminated or truncated:
                 break
 
-        return obs, total_reward, terminated, truncated, {"termination_reason": termination_reason}
+        info = {"termination_reason": termination_reason}
+        info.update(self._scenario_info)
+        return obs, total_reward, terminated, truncated, info
 
     def _generate_route(self, start_location, min_manhattan_distance=100.0, max_manhattan_distance=200.0, fixed_goal=None):
         """Pick a goal within [min, max] Manhattan distance and resolve a real route to it.

@@ -245,6 +245,8 @@ if __name__ == "__main__":
             "steer_lowpass_alpha": environment["steer_lowpass_alpha"],
             "max_physical_ticks": environment["max_physical_ticks"],
             "seed": algorithm["seed"],
+            "town": simulator["town"],
+            "scenario": environment.get("scenario"),
         }
         args.total_timesteps = algorithm["total_timesteps"]
         args.n_steps = algorithm["n_steps_per_environment"]

@@ -663,3 +663,43 @@ Find a way to track experiment configs - right now we are relying on the logs on
 - **Unresolved questions:** A future fixed-route/action-replay harness would
   still be needed to detect a small behavioral change that happens not to
   affect these aggregate outcomes.
+
+## Deterministic scenario harness, placement slice (2026-09-09)
+
+- **What changed:** Added a versioned `environment.scenario` contract for a
+  scenario ID, fixed ego start/goal, and named non-ego CARLA actors with exact
+  blueprints, transforms, and blueprint attributes. `CarlaGymEnv` now owns
+  these actors' lifecycle, reports the scenario ID/count in Gymnasium info,
+  and fails setup rather than silently omitting an actor. Config-backed train,
+  evaluation, and driving launch paths forward this contract; the architecture
+  document describes its intentionally limited scope.
+- **Why:** Future traffic, pedestrian, and perception work needs replayable
+  actor placement and reliable cleanup before it can produce interpretable
+  results.
+- **Observed results:** Sixteen pure configuration/environment-component tests
+  pass, including parsing valid actor specs and rejecting duplicate names,
+  unsupported implicit behavior, and malformed scenario config. The dedicated
+  CARLA simulator was not running when checked, so no live actor-spawn smoke
+  run was performed.
+- **Conclusion:** The initial-world-state and actor-ownership boundary exists
+  without changing the frozen observation, reward, termination, or actor
+  behavior semantics.
+- **Unresolved questions:** A live CARLA smoke test needs map-verified
+  transforms. Actor controllers, traffic-light scheduling, walker AI, event
+  metrics, and any policy experiment remain deliberately out of scope.
+
+## Deterministic scenario harness live smoke (2026-09-09)
+
+- **What changed:** Started the isolated `sim-2` CARLA slot and reset an
+  `old24-live-spawn-smoke` scenario using map spawn points: a fixed ego start,
+  fixed goal, and one named `vehicle.tesla.model3` scenario actor.
+- **Why:** Verify that the new declarative spec crosses the actual CARLA
+  boundary, rather than only parsing in unit tests.
+- **Observed results:** The reset completed and returned
+  `{"scenario_id": "old24-live-spawn-smoke", "scenario_actor_count": 1}`;
+  the world contained both ego and scenario vehicle before close. No policy was
+  loaded or trained.
+- **Conclusion:** The placement/lifecycle slice works end-to-end for a static
+  vehicle actor on the installed Town10 map.
+- **Unresolved questions:** This does not validate moving actors, walkers,
+  traffic signals, or repeated reset cleanup; those remain later scoped work.
